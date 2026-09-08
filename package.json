@@ -1,0 +1,35 @@
+{
+  "name": "dsh-scheduled-send",
+  "version": "0.1.0",
+  "description": "DSH plugin: scheduled sending (⏰ composer button, dock list of pending tasks, due-time delivery as a normal user bubble, optional model switch)",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-model-selection"
+      ],
+      "external": []
+    }
+  },
+  "scripts": {
+    "build": "npm run build:client",
+    "build:client": "node scripts/build-client.mjs",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}
