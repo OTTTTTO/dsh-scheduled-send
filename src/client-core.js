@@ -3,6 +3,9 @@
 
 export const COLLAPSE_THRESHOLD = 3;
 
+/** Client-side note lifetime (fix 3): notes older than this are not rendered. */
+export const NOTE_TTL_MS = 600_000;
+
 /** Sort a task list by sendAt ascending (display order). */
 export function sortTasks(tasks) {
   return [...(tasks || [])].sort((a, b) => (a.sendAt || 0) - (b.sendAt || 0));
@@ -65,28 +68,41 @@ export function createScheduledClientState({ fetchState, postSchedule, cancelSch
   let delivered = [];
   let timer = null;
   let stopped = false;
+  let sessionId = null; // FIX 2: this dock belongs to exactly one conversation
   const handledSwitches = new Set();
 
+  // strict conversation filter (fix 2): with a session bound, only entries
+  // belonging to THIS conversation are ever visible; other-session tasks are
+  // dropped from the local list on every refresh.
+  const own = (it) => !sessionId || !it?.conversationId || it.conversationId === sessionId;
+
   return {
-    /** Pending tasks sorted ascending by sendAt. */
-    visibleTasks() {
-      return sortTasks(tasks);
+    /** Bind this client to one conversation (called by both slot injects). */
+    setSession(sid) {
+      sessionId = sid || null;
+      tasks = tasks.filter(own);
     },
-    /** Model-fallback notes for entries already delivered. */
+
+    /** Pending tasks sorted ascending by sendAt, own session only. */
+    visibleTasks() {
+      return sortTasks(tasks).filter(own);
+    },
+    /** Dismissible model-fallback notes (own session, within NOTE_TTL_MS). */
     lastDelivered() {
-      return delivered;
+      const t = now();
+      return delivered.filter(own).filter((n) => n.modelFallback && t - (n.deliveredAt ?? 0) < NOTE_TTL_MS);
     },
     /** Switches the client still owes (own-session filtering at call time). */
     pendingSwitches() {
-      return modelSwitchPending;
+      return modelSwitchPending.filter(own);
     },
     snapshot() {
-      return { tasks: sortTasks(tasks), modelSwitchPending, recentDelivered: delivered, fetchedAt: now() };
+      return { tasks: sortTasks(tasks).filter(own), modelSwitchPending: modelSwitchPending.filter(own), recentDelivered: delivered.filter(own), fetchedAt: now() };
     },
 
     async refresh() {
       const s = await fetchState();
-      tasks = s?.tasks ?? [];
+      tasks = (s?.tasks ?? []).filter(own); // strict: stale other-session cache never survives a refresh
       modelSwitchPending = s?.modelSwitchPending ?? [];
       delivered = s?.recentDelivered ?? [];
       return this.snapshot();
@@ -95,12 +111,13 @@ export function createScheduledClientState({ fetchState, postSchedule, cancelSch
     /**
      * User-facing schedule entry: POST to the host route and locally enqueue
      * the returned task so it is visible IMMEDIATELY (无需刷新立即显示).
+     * Entries from another conversation are never enqueued locally (fix 2).
      */
     async scheduleMessage(payload) {
       if (!postSchedule) throw new Error('postSchedule 未配置');
       const result = await postSchedule(payload);
       const task = result?.task ?? result;
-      if (task?.id && !tasks.some((t) => t.id === task.id)) tasks = [...tasks, task];
+      if (task?.id && own(task) && !tasks.some((t) => t.id === task.id)) tasks = [...tasks, task];
       return task;
     },
 
@@ -110,6 +127,11 @@ export function createScheduledClientState({ fetchState, postSchedule, cancelSch
       tasks = tasks.filter((t) => t.id !== id);
     },
 
+    /** FIX 3: dismiss one fallback note so it disappears immediately. */
+    dismissNote(id) {
+      delivered = delivered.filter((n) => n.id !== id);
+    },
+
     /**
      * Due-time model switch cooperation: for each pending switch bound to
      * THIS session, dir.select the model then POST the confirmation. Each
@@ -117,7 +139,7 @@ export function createScheduledClientState({ fetchState, postSchedule, cancelSch
      */
     async handleModelSwitches(sessionId) {
       if (typeof selectModel !== 'function' || typeof confirmModelSwitch !== 'function') return;
-      for (const entry of modelSwitchPending || []) {
+      for (const entry of this.pendingSwitches() || []) {
         if (!entry?.taskId || handledSwitches.has(entry.taskId)) continue;
         if (entry.conversationId && sessionId && entry.conversationId !== sessionId) continue;
         handledSwitches.add(entry.taskId); // mark first: never double-select

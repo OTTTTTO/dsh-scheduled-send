@@ -122,3 +122,71 @@ test('busy agent (runMaintenance throws) propagates so the scheduler retries', a
   const deliver = createFollowupDelivery({ tracking });
   await assert.rejects(() => deliver({ id: 't1', content: 'x', conversationId: 'sess-1' }), /busy/);
 });
+
+// --- FIX 1: host-side model switch -------------------------------------------
+function mkWaterfallCtx() {
+  const listeners = new Map();
+  const ctx = {
+    on: (name, fn) => {
+      if (!listeners.has(name)) listeners.set(name, []);
+      const list = listeners.get(name);
+      list.push(fn);
+      return () => { const i = list.indexOf(fn); if (i >= 0) list.splice(i, 1); };
+    },
+  };
+  ctx.__emitRequest = async (payload) => {
+    const list = listeners.get('agent/request') || [];
+    const run = async (i) => (i >= list.length ? { provider: 'base', model: 'base-model' } : list[i](payload, async () => run(i + 1)));
+    return run(0);
+  };
+  return ctx;
+}
+
+test('FIX1 host-side switch: agent/request override applies the model to the next request, one-shot', async () => {
+  const ctx = mkCtx();
+  const tracking = installAgentTracking(ctx);
+  const waterfall = mkWaterfallCtx();
+  const agent = mkAgent('sess-1');
+  agent.ctx = waterfall;
+  ctx.emit('agent/created', { agent });
+
+  let hookUsed = false;
+  const deliver = createFollowupDelivery({
+    tracking,
+    switchModel: async () => { hookUsed = true; return { ok: true }; },
+  });
+  const r = await deliver({ id: 't1', content: 'x', conversationId: 'sess-1', model: { provider: 'zai', model: 'glm-5.3-flash' } });
+  assert.equal(r, true, 'no fallback when the host switch installs');
+  assert.equal(hookUsed, false, 'client-cooperative hook is only the fallback, never used when the host path works');
+
+  const first = await waterfall.__emitRequest({ config: {} });
+  assert.equal(first.provider, 'zai', 'next request routed to the selected provider');
+  assert.equal(first.model, 'glm-5.3-flash');
+
+  const second = await waterfall.__emitRequest({ config: {} });
+  assert.equal(second.provider, 'base', 'override is one-shot: later requests keep their own config');
+  assert.equal(agent.messages.length, 1, 'message delivered');
+});
+
+test('FIX1 host-side switch: override disposed when the turn cannot start (busy agent)', async () => {
+  const ctx = mkCtx();
+  const tracking = installAgentTracking(ctx);
+  const waterfall = mkWaterfallCtx();
+  const agent = mkAgent('sess-1', { runMaintenance: async () => { throw new Error('busy'); } });
+  agent.ctx = waterfall;
+  ctx.emit('agent/created', { agent });
+  const deliver = createFollowupDelivery({ tracking });
+  await assert.rejects(() => deliver({ id: 't1', content: 'x', conversationId: 'sess-1', model: { provider: 'p', model: 'm' } }), /busy/);
+  const req = await waterfall.__emitRequest({ config: {} });
+  assert.equal(req.provider, 'base', 'override cleaned up so it cannot leak into a later unrelated request');
+});
+
+test('FIX1 host-side switch unavailable (no agent.ctx) → client-cooperative fallback + degrade note', async () => {
+  const ctx = mkCtx();
+  const tracking = installAgentTracking(ctx);
+  const agent = mkAgent('sess-1'); // no ctx → host path unavailable
+  ctx.emit('agent/created', { agent });
+  const deliver = createFollowupDelivery({ tracking, switchModel: async () => ({ ok: false, error: 'client offline' }) });
+  const r = await deliver({ id: 't1', content: 'x', conversationId: 'sess-1', model: { provider: 'p', model: 'm' } });
+  assert.deepEqual(r, { modelFallback: true, modelError: 'client offline' });
+});

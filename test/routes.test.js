@@ -154,3 +154,33 @@ test('POST model-selected confirms a pending switch', async () => {
   await route.handler(await fakeReq('POST', MODEL_SELECTED_PATH, { taskId: 'nope' }), res2);
   assert.equal(res2.status, 404);
 });
+
+// --- FIX 2: session isolation -------------------------------------------------
+test('FIX2 GET state ?conversationId= filters tasks/pending/notes to that conversation', async () => {
+  const timers = manualTimers();
+  const clock = { now: () => 1_000 };
+  const hub = createModelSwitchHub({ clock, timers, graceMs: 60_000 });
+  void hub.expect({ id: 'task-1-5000', model: { provider: 'p', model: 'm' }, conversationId: 'sess-A' });
+  const cache = {
+    scheduler: { list: () => [
+      { id: 'a1', content: 'A task', sendAt: 5_000, conversationId: 'sess-A' },
+      { id: 'b1', content: 'B task', sendAt: 6_000, conversationId: 'sess-B' },
+    ] },
+    hub,
+    recentDelivered: [
+      { id: 'a2', content: 'A note', conversationId: 'sess-A', modelFallback: true, deliveredAt: 900 },
+      { id: 'b2', content: 'B note', conversationId: 'sess-B', modelFallback: true, deliveredAt: 900 },
+    ],
+    now: () => clock.now(),
+  };
+  const ws = fakeWebServer();
+  registerScheduledSendRoutes(ws, cache);
+  const route = ws.routes.get(STATE_PATH);
+  const res = fakeRes();
+  await route.handler({ method: 'GET', url: STATE_PATH + '?conversationId=sess-A' }, res);
+  const body = jsonOf(res);
+  assert.deepEqual(body.tasks.map((t) => t.id), ['a1'], 'only session A tasks');
+  assert.deepEqual(body.recentDelivered.map((n) => n.id), ['a2'], 'only session A notes');
+  assert.equal(body.modelSwitchPending.length, 1);
+  assert.equal(body.modelSwitchPending[0].conversationId, 'sess-A', 'only session A pending switches');
+});

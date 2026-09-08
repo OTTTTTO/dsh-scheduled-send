@@ -38,8 +38,9 @@ export async function apply(ctx, config = {}, deps = {}) {
 
   const cache = {
     dataDir,
-    recentDelivered: [], // display queue for delivered notes (model fallbacks)
-    now: clock.now,
+    recentDelivered: [], // dismissible fallback notes only (fix 3)
+    now: () => clock.now(),
+    noteTtlMs: config.noteTtlMs ?? 600_000, // notes expire after 10 minutes
   };
 
   const deliverDue = deps.deliverDue ?? createFollowupDelivery({
@@ -54,12 +55,12 @@ export async function apply(ctx, config = {}, deps = {}) {
     timers,
     deliver: async (task) => {
       const r = await deliverDue(task); // throws keep the task queued (retry/补发)
-      const entry = { ...task, deliveredAt: clock.now() };
+      // FIX 3 (lifecycle bug): a CLEAN delivery leaves NO note — only actual
+      // model-switch degradations surface, and only on their own entry.
       if (r && r.modelFallback) {
-        entry.modelFallback = true;
-        entry.modelError = r.modelError;
+        const entry = { ...task, deliveredAt: clock.now(), modelFallback: true, modelError: r.modelError };
+        cache.recentDelivered = [entry, ...cache.recentDelivered].slice(0, 20);
       }
-      cache.recentDelivered = [entry, ...cache.recentDelivered].slice(0, 20);
     },
   });
   cache.hub = hub;

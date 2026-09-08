@@ -112,7 +112,7 @@ test('bundle: slots wired (input.right + input.dock), core hits the state route'
     return { ok: true, json: async () => ({ now: 0, tasks: [], modelSwitchPending: [], recentDelivered: [] }) };
   };
   await mod.core.refresh();
-  assert.equal(called, STATE);
+  assert.equal(called, STATE + '?conversationId=sess-1', 'FIX2: state polled per current session');
 });
 
 test('bundle: core POSTs schedule to the schedule route and DELETEs on cancel', async () => {
@@ -204,7 +204,12 @@ test('bundle: dock renders pending entries (monospace source + time + countdown 
   ];
   globalThis.fetch = async () => ({
     ok: true,
-    json: async () => ({ now: 0, tasks, modelSwitchPending: [], recentDelivered: [{ id: 't9', content: 'x', modelFallback: true, modelError: 'offline', deliveredAt: 1 }] }),
+    json: async () => ({ now: 0, tasks, modelSwitchPending: [], recentDelivered: [
+      // FIX3: note fresh (within TTL), own session → shown with a dismiss ×
+      { id: 't9', content: 'x', modelFallback: true, modelError: 'offline', conversationId: 'sess-1', deliveredAt: Date.now() },
+      // FIX2: another session's note must never surface here
+      { id: 't8', content: 'y', modelFallback: true, modelError: 'e', conversationId: 'sess-2', deliveredAt: Date.now() },
+    ] }),
   });
   await core.refresh();
 
@@ -229,4 +234,9 @@ test('bundle: dock renders pending entries (monospace source + time + countdown 
   assert.match(flat, /后/, 'countdown rendered');
   assert.match(flat, /取消/, 'cancel button rendered');
   assert.match(flat, /模型切换失败/, 'model-fallback note surfaced on the entry list');
+  assert.ok(!/t8/.test(flat) && !flat.includes('"y"'), 'FIX2: other-session note not rendered');
+  const dismiss = findAll(tree2, (n) => n.type === 'button' && n.props?.['aria-label'] === '关闭提示')[0];
+  assert.ok(dismiss, 'FIX3: note is dismissible (× button)');
+  dismiss.props.onClick();
+  assert.equal(core.lastDelivered().length, 0, 'FIX3: dismissed note gone from state');
 });

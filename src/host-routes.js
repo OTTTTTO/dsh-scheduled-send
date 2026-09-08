@@ -86,7 +86,18 @@ export function registerScheduledSendRoutes(webServer, cache) {
 
   const disposers = [];
 
-  // GET state
+  // FIX 3: recentDelivered entries are fallback notes with a limited
+  // lifetime — prune expired ones on read so no note stays resident forever.
+  const pruneNotes = () => {
+    const ttl = typeof cache.noteTtlMs === 'number' ? cache.noteTtlMs : 600_000;
+    const t = now();
+    if (Array.isArray(cache.recentDelivered)) {
+      cache.recentDelivered = cache.recentDelivered.filter((n) => t - (n.deliveredAt ?? 0) < ttl);
+    }
+    return cache.recentDelivered ?? [];
+  };
+
+  // GET state (fix 2: ?conversationId= filters every list to that conversation)
   disposers.push(webServer.register({
     kind: 'exact',
     path: STATE_PATH,
@@ -95,11 +106,13 @@ export function registerScheduledSendRoutes(webServer, cache) {
         sendJson(res, 405, { error: 'method not allowed' });
         return;
       }
+      const cid = new URL(req.url ?? '/', 'http://x').searchParams.get('conversationId');
+      const own = (it) => !cid || it?.conversationId === cid;
       sendJson(res, 200, {
         now: now(),
-        tasks: cache.scheduler?.list?.() ?? [],
-        modelSwitchPending: cache.hub?.pending?.() ?? [],
-        recentDelivered: cache.recentDelivered ?? [],
+        tasks: (cache.scheduler?.list?.() ?? []).filter(own),
+        modelSwitchPending: (cache.hub?.pending?.() ?? []).filter(own),
+        recentDelivered: pruneNotes().filter(own),
       });
     },
   }));

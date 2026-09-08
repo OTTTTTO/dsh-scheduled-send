@@ -97,9 +97,93 @@ test('end-to-end: POST schedule → due → normal user bubble via runMaintenanc
   await stateRoute.handler({ method: 'GET', url: '/x' }, res2);
   const state = JSON.parse(res2.body);
   assert.equal(state.tasks.length, 0, 'no pending task after delivery');
-  assert.equal(state.recentDelivered.length, 1);
-  assert.equal(state.recentDelivered[0].id, taskId);
-  void taskId;
+  assert.equal(state.recentDelivered.length, 0, 'FIX3: clean delivery leaves NO note (old bug: every delivery became a 常驻 note)');
+});
+
+test('FIX1+FIX3 end-to-end with model: host ctx override used; clean switch leaves no note', async () => {
+  const dir = await mkdtemp();
+  const timers = manualTimers();
+  const clock = { now: () => 1_000 };
+  const messages = [];
+  const requests = [];
+  requests.__listeners = [];
+  requests.__emit = async (payload) => {
+    const list = requests.__listeners;
+    const run = async (i) => (i >= list.length ? { provider: 'base', model: 'base' } : list[i](payload, async () => run(i + 1)));
+    return run(0);
+  };
+  const agent = {
+    id: 'sess-1',
+    followup: (m) => messages.push(m),
+    runMaintenance: async (fn) => fn(),
+    ctx: {
+      on: (name, fn) => {
+        requests.__listeners.push(fn);
+        return () => { const i = requests.__listeners.indexOf(fn); if (i >= 0) requests.__listeners.splice(i, 1); };
+      },
+    },
+  };
+  const ctx = fakeCtx();
+  await apply(ctx, { dataDir: dir, clock, timers, modelSwitchGraceMs: 50 }, {
+    trackAgents: () => ({ live: () => [agent], dispose: () => {} }),
+  });
+
+  const route = ctx.__routes.get('/plugin-data/dsh-scheduled-send/schedule');
+  const body = JSON.stringify({ content: '带模型', sendAt: 5_000, conversationId: 'sess-1', model: { provider: 'zai', model: 'glm-5.3-flash' } });
+  const res = { status: 0, body: '', writeHead(s) { this.status = s; }, end(t) { this.body = t; } };
+  await route.handler({ method: 'POST', url: '/x', [Symbol.asyncIterator]: async function* () { yield body; } }, res);
+  assert.equal(res.status, 200);
+
+  clock.now = () => 6_000;
+  await timers.runAll(); // fires immediately: host switch needs no client round-trip
+  assert.equal(messages.length, 1, 'delivered without waiting for any client confirmation');
+  const req = await requests.__emit({ config: {} });
+  assert.equal(req.provider, 'zai');
+  assert.equal(req.model, 'glm-5.3-flash');
+
+  const stateRoute = ctx.__routes.get('/plugin-data/dsh-scheduled-send/state');
+  const res2 = { status: 0, body: '', writeHead(s) { this.status = s; }, end(t) { this.body = t; } };
+  await stateRoute.handler({ method: 'GET', url: '/x' }, res2);
+  const state = JSON.parse(res2.body);
+  assert.equal(state.recentDelivered.length, 0, 'successful host switch → no failure note');
+  assert.equal(state.modelSwitchPending.length, 0, 'client-cooperative hub never engaged');
+});
+
+test('FIX3 end-to-end: degraded switch (no ctx, client offline) → note appears once, expires after TTL', async () => {
+  const dir = await mkdtemp();
+  const timers = manualTimers();
+  const clock = { now: () => 1_000 };
+  const messages = [];
+  const agent = { id: 'sess-1', followup: (m) => messages.push(m), runMaintenance: async (fn) => fn() }; // no ctx → hub fallback
+  const ctx = fakeCtx();
+  await apply(ctx, { dataDir: dir, clock, timers, modelSwitchGraceMs: 50, noteTtlMs: 100 }, {
+    trackAgents: () => ({ live: () => [agent], dispose: () => {} }),
+  });
+
+  const route = ctx.__routes.get('/plugin-data/dsh-scheduled-send/schedule');
+  const body = JSON.stringify({ content: '降级', sendAt: 5_000, conversationId: 'sess-1', model: { provider: 'p', model: 'm' } });
+  const res = { status: 0, body: '', writeHead(s) { this.status = s; }, end(t) { this.body = t; } };
+  await route.handler({ method: 'POST', url: '/x', [Symbol.asyncIterator]: async function* () { yield body; } }, res);
+
+  clock.now = () => 6_000;
+  const firing = timers.runAll();
+  await new Promise((r) => setTimeout(r, 10)); // delivery now awaits the hub grace timer
+  await timers.runAll(); // grace timer registered after the first snapshot → fires here → degrade
+  await firing;
+  assert.equal(messages.length, 1, 'still delivered on the current model');
+
+  const stateRoute = ctx.__routes.get('/plugin-data/dsh-scheduled-send/state');
+  const read = async () => {
+    const r2 = { status: 0, body: '', writeHead(s) { this.status = s; }, end(t) { this.body = t; } };
+    await stateRoute.handler({ method: 'GET', url: '/x' }, r2);
+    return JSON.parse(r2.body);
+  };
+  let state = await read();
+  assert.equal(state.recentDelivered.length, 1, 'fallback note present');
+  assert.equal(state.recentDelivered[0].modelFallback, true);
+  clock.now = () => 7_000; // past noteTtlMs (100)
+  state = await read();
+  assert.equal(state.recentDelivered.length, 0, 'note expired — never resident forever');
 });
 
 test('end-to-end with model: due → client switch confirmed → message delivered', async () => {

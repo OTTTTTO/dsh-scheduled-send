@@ -198,10 +198,19 @@ function createClientPluginBody(React) {
             ]),
           ]))
         : null,
-      notes.slice(0, 3).map((n) => h("div", {
+      notes.slice(0, 3).filter((n) => n.modelFallback).map((n) => h("div", {
         key: "note-" + n.id,
-        style: { padding: "3px 8px", borderRadius: 8, background: "rgba(234,179,8,.14)", color: "inherit" },
-      }, "⚠ 模型切换失败，已按当前模型发送：" + (n.modelError || "未知原因") + "（" + String(n.content ?? "").slice(0, 40) + "）")),
+        style: { display: "flex", alignItems: "center", gap: 6, padding: "3px 8px", borderRadius: 8, background: "rgba(234,179,8,.14)", color: "inherit", maxWidth: "48rem", margin: "2px auto 0" },
+      }, [
+        h("span", { key: "txt", style: { flex: 1 } },
+          "⚠ 模型切换失败，已按当前模型发送：" + (n.modelError || "未知原因") + "（" + String(n.content ?? "").slice(0, 40) + "）"),
+        // fix 3: dismissible — one click and the note is gone for good
+        h("button", {
+          key: "x", type: "button", "aria-label": "关闭提示",
+          onClick: () => { core.dismissNote(n.id); setTick((v) => v + 1); },
+          style: { cursor: "pointer", border: "1px solid rgba(128,128,128,.4)", borderRadius: 999, padding: "0 8px", fontSize: 11, background: "transparent", color: "inherit", flexShrink: 0 },
+        }, "×"),
+      ])),
     ]);
   }
 
@@ -216,7 +225,10 @@ function createClientPluginBody(React) {
 
     const core = createScheduledClientState({
       fetchState: async () => {
-        const res = await doFetch(stateRoutePath, { headers: { accept: "application/json" } });
+        // fix 2: ask the host for THIS conversation's view; the core still
+        // filters strictly client-side as a defense against stale caches.
+        const q = currentSessionId ? "?conversationId=" + encodeURIComponent(currentSessionId) : "";
+        const res = await doFetch(stateRoutePath + q, { headers: { accept: "application/json" } });
         if (!res.ok) throw new Error("state HTTP " + res.status);
         return res.json();
       },
@@ -265,6 +277,7 @@ function createClientPluginBody(React) {
           order: 100,
           inject: (sessionId) => {
             currentSessionId = sessionId;
+            core.setSession(sessionId); // fix 2: dock/button are conversation-scoped
             return { sessionId, core, modelList: modelListFor(sessionId) };
           },
         }, ScheduleButton));
@@ -274,6 +287,7 @@ function createClientPluginBody(React) {
           order: 30,
           inject: (sessionId) => {
             currentSessionId = sessionId;
+            core.setSession(sessionId); // fix 2
             return { sessionId, core };
           },
         }, ScheduledDock));

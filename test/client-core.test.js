@@ -130,3 +130,52 @@ test('start/stop poll loop drives refresh', async () => {
   core.stop();
   assert.ok(fetched >= 1, 'at least one fetch happened');
 });
+
+// --- FIX 2: session isolation -------------------------------------------------
+test('FIX2 session isolation: setSession filters tasks/notes/switches; other-session leftovers cleared', async () => {
+  let server = { now: 0, tasks: [], modelSwitchPending: [], recentDelivered: [] };
+  const core = createScheduledClientState({
+    fetchState: async () => server,
+    postSchedule: async (p) => ({ task: { id: 't9', ...p } }),
+    cancelSchedule: async () => true,
+    now: () => 0,
+  });
+  core.setSession('sess-A');
+  server = {
+    now: 0,
+    tasks: [
+      { id: 'a', sendAt: 2, conversationId: 'sess-A' },
+      { id: 'b', sendAt: 3, conversationId: 'sess-B' },
+    ],
+    modelSwitchPending: [
+      { taskId: 'pa', model: { provider: 'p', model: 'm' }, conversationId: 'sess-A' },
+      { taskId: 'pb', model: { provider: 'p', model: 'm' }, conversationId: 'sess-B' },
+    ],
+    recentDelivered: [
+      { id: 'na', content: 'x', modelFallback: true, modelError: 'e', conversationId: 'sess-A', deliveredAt: 0 },
+      { id: 'nb', content: 'y', modelFallback: true, modelError: 'e', conversationId: 'sess-B', deliveredAt: 0 },
+    ],
+  };
+  await core.refresh();
+  assert.deepEqual(core.visibleTasks().map((t) => t.id), ['a'], 'only own-session tasks visible');
+  assert.deepEqual(core.pendingSwitches().map((s) => s.taskId), ['pa']);
+  assert.deepEqual(core.lastDelivered().map((n) => n.id), ['na'], 'only own-session notes');
+  // optimistic local add from another session must not leak in
+  await core.scheduleMessage({ content: 'mine', sendAt: 9, conversationId: 'sess-A' });
+  assert.deepEqual(core.visibleTasks().map((t) => t.id), ['a', 't9']);
+});
+
+// --- FIX 3: dismissible notes -------------------------------------------------
+test('FIX3 dismissNote removes the note locally; non-fallback deliveries never surface notes', async () => {
+  let server = { now: 0, tasks: [], modelSwitchPending: [], recentDelivered: [
+    { id: 'n1', content: 'x', modelFallback: true, modelError: 'offline', conversationId: 's', deliveredAt: 0 },
+    { id: 'n2', content: 'y', modelFallback: false, conversationId: 's', deliveredAt: 0 },
+  ] };
+  const core = createScheduledClientState({ fetchState: async () => server, postSchedule: async () => ({}), cancelSchedule: async () => true, now: () => 0 });
+  core.setSession('s');
+  await core.refresh();
+  const notes = core.lastDelivered();
+  assert.equal(notes.length, 1, 'clean deliveries carry no note');
+  core.dismissNote('n1');
+  assert.equal(core.lastDelivered().length, 0, 'dismissed note gone');
+});
