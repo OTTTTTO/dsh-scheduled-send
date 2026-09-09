@@ -1,0 +1,8 @@
+# Cloudflare Pages custom headers.
+# The market contract REQUIRES the provider page endpoint at /v1/plugins
+# (no extension allowed by schema), and static hosts guess MIME from the
+# extension — serving application/octet-stream, which the DSH Community
+# Market standard adapter rejects. This file pins the correct type.
+/v1/plugins
+  Content-Type: application/json
+  Access-Control-Allow-Origin: *
