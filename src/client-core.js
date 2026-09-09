@@ -103,6 +103,9 @@ export function createScheduledClientState({ fetchState, postSchedule, cancelSch
   let stopped = false;
   let sessionId = null; // this dock belongs to exactly one conversation
   const recentAdds = new Map(); // id → addedAt (FIX 4 grace window)
+  // per-conversation cache: switching sessions shows the cached list
+  // INSTANTLY (no ~1s wait for the network), then refresh() revalidates.
+  const sessionCache = new Map(); // sid → task[]
 
   // strict conversation filter: with a session bound, only entries belonging
   // to THIS conversation are ever visible; other-session tasks are dropped
@@ -121,8 +124,15 @@ export function createScheduledClientState({ fetchState, postSchedule, cancelSch
     setSession(sid) {
       const next = sid || null;
       const changed = next !== sessionId;
+      if (sessionId !== null) sessionCache.set(sessionId, tasks.filter(own));
       sessionId = next;
-      if (changed) tasks = tasks.filter(own);
+      if (changed) {
+        // instant swap: show the cached list for the target session first
+        tasks = sessionId !== null && sessionCache.has(sessionId)
+          ? [...sessionCache.get(sessionId)]
+          : [];
+        error = null;
+      }
       return changed;
     },
 
@@ -166,6 +176,7 @@ export function createScheduledClientState({ fetchState, postSchedule, cancelSch
         if (t - recentAdds.get(id) >= LOCAL_ADD_GRACE_MS || server.some((x) => x.id === id)) recentAdds.delete(id);
       }
       tasks = dedupeById([...server, ...freshLocal]);
+      if (sessionId !== null) sessionCache.set(sessionId, tasks); // keep the instant-swap cache fresh
       return this.snapshot();
     },
 

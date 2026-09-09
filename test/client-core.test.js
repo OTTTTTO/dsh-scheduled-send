@@ -262,3 +262,19 @@ test('start/stop poll loop drives refresh', async () => {
   core.stop();
   assert.ok(fetched >= 1, 'at least one fetch happened');
 });
+
+// instant session swap: switching sessions shows the cached list immediately
+test('setSession swaps to the cached list of the target session instantly', async () => {
+  const sidA = 'conv-a', sidB = 'conv-b';
+  let serverTasks = [{ id: 'a1', content: 'A任务', sendAt: 5, conversationId: sidA }];
+  const core = createScheduledClientState({ fetchState: async () => ({ tasks: serverTasks }), now: () => 0 });
+  core.setSession(sidA);
+  await core.refresh();
+  assert.equal(core.visibleTasks().length, 1, 'session A shows its task');
+  // switch away and back: list must appear WITHOUT awaiting refresh()
+  core.setSession(sidB);
+  assert.equal(core.visibleTasks().length, 0, 'B empty before any fetch');
+  const changed = core.setSession(sidA);
+  assert.equal(changed, true);
+  assert.equal(core.visibleTasks().length, 1, 'A cache restored instantly, before refresh resolves');
+});
