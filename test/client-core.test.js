@@ -81,8 +81,9 @@ test('formatLocalTime renders local YYYY-MM-DD HH:mm', () => {
 
 test('formatCountdown renders remaining time until sendAt', () => {
   const now = 1_000_000;
-  assert.equal(formatCountdown(now + 90_000, now), '1分30秒后');
-  assert.equal(formatCountdown(now + 3_600_000, now), '1小时0分后');
+  assert.equal(formatCountdown(now + 90_000, now), '1分30秒');
+  assert.equal(formatCountdown(now + 3_600_000, now), '1小时0分');
+  assert.equal(formatCountdown(now + 2 * 86400_000 + 3 * 3600_000, now), '2天3小时');
   assert.equal(formatCountdown(now - 5, now), '即将发送');
 });
 

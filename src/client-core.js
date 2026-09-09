@@ -65,12 +65,15 @@ export function formatCountdown(sendAt, now) {
   const ms = sendAt - now;
   if (ms <= 0) return '即将发送';
   const totalSec = Math.floor(ms / 1000);
-  const h = Math.floor(totalSec / 3600);
+  const d = Math.floor(totalSec / 86400);
+  const h = Math.floor((totalSec % 86400) / 3600);
   const m = Math.floor((totalSec % 3600) / 60);
   const s = totalSec % 60;
-  if (h > 0) return `${h}小时${m}分后`;
-  if (m > 0) return `${m}分${s}秒后`;
-  return `${s}秒后`;
+  // no trailing 后 — callers append their own verb (后发送 / 后重置 …)
+  if (d > 0) return `${d}天${h}小时`;
+  if (h > 0) return `${h}小时${m}分`;
+  if (m > 0) return `${m}分${s}秒`;
+  return `${s}秒`;
 }
 
 /** Default confirmation time = now + 5 minutes. */

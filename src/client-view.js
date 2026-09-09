@@ -223,7 +223,7 @@ function createClientPluginBody(React) {
           h("div", { key: "src", style: srcStyle }, t.content),
           h("div", { key: "meta", style: metaStyle }, [
             h("span", { key: "at" }, formatLocalTime(t.sendAt)),
-            h("span", { key: "cd" }, formatCountdown(t.sendAt, Date.now())),
+            h("span", { key: "cd" }, formatCountdown(t.sendAt, Date.now()) + "后发送"),
             h("span", { key: "sp", style: { marginLeft: "auto" } }, cancelBtn(t.id)),
           ]),
         ])),
