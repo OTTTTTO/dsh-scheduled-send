@@ -1,6 +1,6 @@
 {
   "name": "@ottttto/dsh-scheduled-send",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "DSH plugin: scheduled sending (⏰ composer button, dock list of pending tasks, sidebar 定时任务 panel with cross-session cancel, due-time delivery as a normal user bubble)",
   "type": "module",
   "main": "./src/index.js",
