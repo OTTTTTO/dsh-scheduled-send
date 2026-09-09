@@ -260,14 +260,29 @@ function createClientPluginBody(React) {
     const overflow = Math.max(0, all.length - annotated.length);
 
     const isDark = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
-    const entryBtn = {
-      cursor: "pointer", display: "flex", alignItems: "center", gap: 8,
-      width: "100%", boxSizing: "border-box", textAlign: "left",
-      border: "none", background: hover ? "rgba(128,128,128,.16)" : "transparent", color: "inherit",
-      fontSize: 12, fontWeight: 600, padding: "6px 10px", borderRadius: 8, whiteSpace: "nowrap",
-      ...(mobile ? { minHeight: TOUCH_MIN } : {}),
+    // mirrors usage-stats' footer trigger: same metrics + theme variables as
+    // the system sidebar rows (hover comes from the injected var-only rule)
+    const layerStyle = {
+      flex: "none", alignItems: "center", width: "100%", height: 49,
+      margin: "8px 0 0", display: "flex", position: "relative",
+      ...(mobile ? { height: 44 } : {}),
     };
-    const iconBox = { display: "inline-flex", width: 16, justifyContent: "center", flexShrink: 0 };
+    const entryBtn = {
+      width: "100%", height: mobile ? 44 : 49, color: "var(--dsw-alias-label-primary)",
+      cursor: "pointer", background: "0 0", border: "none", borderRadius: 12,
+      alignItems: "center", gap: 8, padding: "0 8px 0 6px", fontFamily: "inherit",
+      fontSize: 14, display: "inline-flex", overflow: "hidden",
+    };
+    const iconBox = { display: "inline-flex", width: mobile ? 18 : 16, justifyContent: "center", flexShrink: 0 };
+    const labelStyle = { textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, overflow: "hidden" };
+    const amountStyle = {
+      color: "var(--dsw-alias-label-secondary)", fontVariantNumeric: "tabular-nums",
+      flex: "none", fontSize: 12, fontWeight: 600, lineHeight: "16px",
+    };
+    const countStyle = {
+      color: "var(--dsw-alias-label-tertiary)", fontVariantNumeric: "tabular-nums",
+      flex: "none", marginLeft: "auto", fontSize: 12, lineHeight: "16px",
+    };
     const badge = (n) => h("span", {
       key: "b", "data-badge": n,
       style: {
@@ -362,18 +377,17 @@ function createClientPluginBody(React) {
         ])
       : null;
 
-    return h("div", { "data-plugin": "dsh-scheduled-send-sidebar", style: { width: "100%" } }, [
-      null,
+    return h("div", { "data-plugin": "dsh-scheduled-send-sidebar", style: layerStyle }, [
+      h("style", { key: "css" }, '.ssb_badge:hover{background:var(--dsw-alias-interactive-bg-hover-solid)}'),
       h("button", {
         key: "btn", type: "button",
-        onMouseEnter: () => setHover(true),
-        onMouseLeave: () => setHover(false),
+        className: "ssb_badge",
         onClick: () => { setOpen(!open); setTick((n) => n + 1); },
         title: "定时任务", "aria-label": "定时任务", style: entryBtn,
       }, [
         h("span", { key: "i", style: iconBox }, "⏰"),
-        h("span", { key: "l" }, "定时任务"),
-        all.length ? h("span", { key: "bs", style: { marginLeft: "auto", display: "inline-flex" } }, badge(all.length)) : null,
+        h("span", { key: "l", style: labelStyle }, "定时任务"),
+        all.length ? h("span", { key: "bs", style: countStyle }, String(all.length)) : null,
       ]),
       footer,
     ]);
