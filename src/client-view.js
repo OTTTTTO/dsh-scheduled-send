@@ -266,7 +266,7 @@ function createClientPluginBody(React) {
       ctx.inject(inject, (scope) => {
         scope.slots.inject("conversation.input.right", () => scope.slots.register({
           name: "conversation.input.right",
-          id: "dsh-scheduled-send",
+          id: "@ottttto/dsh-scheduled-send",
           order: 100,
           inject: (sessionId) => {
             currentSessionId = sessionId;
@@ -276,7 +276,7 @@ function createClientPluginBody(React) {
         }, ScheduleButton));
         scope.slots.inject("conversation.input.dock", () => scope.slots.register({
           name: "conversation.input.dock",
-          id: "dsh-scheduled-send",
+          id: "@ottttto/dsh-scheduled-send",
           order: 30,
           inject: (sessionId) => {
             currentSessionId = sessionId;

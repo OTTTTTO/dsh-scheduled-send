@@ -16,7 +16,7 @@ function loadBundle(react) {
   // eslint-disable-next-line no-eval
   eval(readFileSync(fileURLToPath(new URL('../lib/client.js', import.meta.url)), 'utf8'));
   assert.ok(def, 'bundle registered itself');
-  assert.equal(def.id, 'dsh-scheduled-send');
+  assert.equal(def.id, '@ottttto/dsh-scheduled-send');
   return def.factory((id) => {
     if (id === 'react' || id === 'react/jsx-runtime') return react;
     throw new Error('unexpected require: ' + id);
@@ -104,7 +104,7 @@ test('bundle: slots wired (input.right + input.dock ONLY — modelDirectories go
   assert.deepEqual([...mod.inject].sort(), ['slots'], 'FIX3: modelDirectories no longer injected');
   const captured = applySlots(mod);
   assert.equal(captured.right.name, 'conversation.input.right');
-  assert.equal(captured.right.id, 'dsh-scheduled-send');
+  assert.equal(captured.right.id, '@ottttto/dsh-scheduled-send');
   assert.equal(captured.dock.name, 'conversation.input.dock');
   assert.equal(captured.props.right.sessionId, 'sess-1');
   assert.equal(captured.props.right.modelList, undefined, 'FIX3: no model dropdown data anymore');
