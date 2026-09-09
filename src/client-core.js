@@ -230,13 +230,19 @@ export function createScheduledClientState({ fetchState, postSchedule, cancelSch
     },
 
     /** Cancel a pending task: DELETE on the host + drop locally. */
+    /** Cross-instance optimistic removal by id (no fetch). */
+    removeTask(id) {
+      tasks = tasks.filter((t) => t.id !== id);
+      recentAdds.delete(id);
+    },
+
     async cancelTask(id) {
       // optimistic: drop locally FIRST so the row disappears instantly; the
       // DELETE then persists it. onChanged lets the sibling instance (dock ↔
       // sidebar panel) refresh immediately instead of waiting for its poll.
       tasks = tasks.filter((t) => t.id !== id);
       recentAdds.delete(id);
-      if (typeof this.onChanged === 'function') this.onChanged();
+      if (typeof this.onChanged === 'function') this.onChanged(id);
       if (cancelSchedule) await cancelSchedule(id);
     },
 
