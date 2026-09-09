@@ -1,11 +1,10 @@
-// Red/green TDD: host routes — state GET / schedule POST / cancel DELETE /
-// model-selected POST on the host webServer. Display-safe: no secrets.
+// Red/green TDD: host routes — state GET / schedule POST / cancel DELETE on
+// the host webServer. Display-safe: no secrets. Model-switch routes REMOVED.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fs } from '../src/deps.js';
-import { registerScheduledSendRoutes, STATE_PATH, SCHEDULE_PATH, MODEL_SELECTED_PATH } from '../src/host-routes.js';
+import { registerScheduledSendRoutes, STATE_PATH, SCHEDULE_PATH } from '../src/host-routes.js';
 import { createScheduler } from '../src/scheduler.js';
-import { createModelSwitchHub } from '../src/host-routes.js';
 
 // --- tiny fakes ------------------------------------------------------------
 function fakeWebServer() {
@@ -37,9 +36,8 @@ async function mkStack(opts = {}) {
   const ws = fakeWebServer();
   const dir = await mkdtemp();
   const clock = { now: () => 1_000 };
-  const hub = opts.hub || createModelSwitchHub({ clock, graceMs: 60_000, timers: manualTimers() });
   const scheduler = await createScheduler({ dataDir: dir, clock, timers: manualTimers(), deliver: opts.deliver || (async () => {}) });
-  const cache = { scheduler, hub, recentDelivered: [], now: () => clock.now() };
+  const cache = { scheduler, now: () => clock.now() };
   registerScheduledSendRoutes(ws, cache);
   const call = async (method, url, body) => {
     const route = [...ws.routes.values()].find((r) => url.startsWith(r.path.split('?')[0]));
@@ -47,7 +45,7 @@ async function mkStack(opts = {}) {
     await route.handler(await fakeReq(method, url, body), res);
     return res;
   };
-  return { ws, scheduler, hub, cache, call, clock, dir };
+  return { ws, scheduler, cache, call, clock, dir };
 }
 function manualTimers() {
   const jobs = new Map();
@@ -60,10 +58,15 @@ function manualTimers() {
 }
 
 // --- tests -----------------------------------------------------------------
-test('paths are namespaced to this plugin', () => {
+test('paths are namespaced to this plugin; model-selected route is GONE', () => {
   assert.equal(STATE_PATH, '/plugin-data/dsh-scheduled-send/state');
   assert.equal(SCHEDULE_PATH, '/plugin-data/dsh-scheduled-send/schedule');
-  assert.equal(MODEL_SELECTED_PATH, '/plugin-data/dsh-scheduled-send/model-selected');
+});
+
+test('REMOVED model switch: only state + schedule routes exist', async () => {
+  const { ws } = await mkStack();
+  const paths = [...ws.routes.keys()].sort();
+  assert.deepEqual(paths, [SCHEDULE_PATH, STATE_PATH], 'no model-selected route registered');
 });
 
 test('GET state returns tasks (ascending) + now, display-safe', async () => {
@@ -77,6 +80,7 @@ test('GET state returns tasks (ascending) + now, display-safe', async () => {
   assert.equal(body.now, 1_000);
   assert.deepEqual(body.tasks.map((t) => t.content), ['a', 'b'], 'tasks sorted ascending by sendAt');
   assert.ok(!JSON.stringify(body).match(/apiKey|token|password/i), 'no secret-ish keys anywhere');
+  assert.ok(!('modelSwitchPending' in body), 'model-switch payload removed');
 });
 
 test('POST schedule validates: empty content / past sendAt / missing conversationId → 400', async () => {
@@ -87,15 +91,14 @@ test('POST schedule validates: empty content / past sendAt / missing conversatio
   assert.equal(scheduler.list().length, 0, 'nothing enqueued');
 });
 
-test('POST schedule success: 200 with the created task (model kept)', async () => {
+test('POST schedule success: 200 with the created task; body.model IGNORED (legacy clients)', async () => {
   const { call } = await mkStack();
-  const model = { provider: 'p', model: 'flash' };
-  const res = await call('POST', SCHEDULE_PATH, { content: 'hello', sendAt: 5_000, conversationId: 'sess-1', model });
-  assert.equal(res.status, 200);
+  const res = await call('POST', SCHEDULE_PATH, { content: 'hello', sendAt: 5_000, conversationId: 'sess-1', model: { provider: 'p', model: 'flash' } });
+  assert.equal(res.status, 200, 'model field does not error');
   const task = jsonOf(res).task;
   assert.equal(task.content, 'hello');
   assert.equal(task.conversationId, 'sess-1');
-  assert.deepEqual(task.model, model);
+  assert.equal(task.model, null, 'model never stored anymore');
 });
 
 test('POST schedule rejects a non-JSON body with 400', async () => {
@@ -121,57 +124,14 @@ test('unsupported methods → 405', async () => {
   assert.equal((await call('POST', STATE_PATH, {})).status, 405);
 });
 
-test('model-switch hub: expect/confirm + timeout fallback, exposed via state', async () => {
-  const timers = manualTimers();
-  const clock = { now: () => 0 };
-  const hub = createModelSwitchHub({ clock, timers, graceMs: 10_000 });
-  const p = hub.expect({ id: 't1', model: { provider: 'p', model: 'm' }, conversationId: 's' });
-  assert.deepEqual(hub.pending(), [{ taskId: 't1', model: { provider: 'p', model: 'm' }, conversationId: 's' }]);
-  assert.equal(await hub.confirm('t1'), true);
-  assert.equal(await p, true, 'confirmed switch resolves true');
-  assert.deepEqual(hub.pending(), [], 'cleared after confirm');
-
-  const p2 = hub.expect({ id: 't2', model: { provider: 'p', model: 'm' }, conversationId: 's' });
-  clock.now = () => 20_000; // past grace
-  await timers.runAll();
-  assert.equal(await p2, false, 'timeout resolves false → degrade to current model');
-  assert.deepEqual(hub.pending(), []);
-  assert.equal(await hub.confirm('t2'), false, 'late confirm after timeout is a no-op');
-});
-
-test('POST model-selected confirms a pending switch', async () => {
-  const timers = manualTimers();
-  const hub = createModelSwitchHub({ clock: { now: () => 0 }, timers, graceMs: 60_000 });
-  const p = hub.expect({ id: 't9', model: { provider: 'p', model: 'm' }, conversationId: 's' });
-  const ws = fakeWebServer();
-  registerScheduledSendRoutes(ws, { scheduler: { list: () => [] }, hub, recentDelivered: [], now: () => 0 });
-  const route = ws.routes.get(MODEL_SELECTED_PATH);
-  const res = fakeRes();
-  await route.handler(await fakeReq('POST', MODEL_SELECTED_PATH, { taskId: 't9' }), res);
-  assert.equal(res.status, 200);
-  assert.equal(await p, true);
-  const res2 = fakeRes();
-  await route.handler(await fakeReq('POST', MODEL_SELECTED_PATH, { taskId: 'nope' }), res2);
-  assert.equal(res2.status, 404);
-});
-
 // --- FIX 2: session isolation -------------------------------------------------
-test('FIX2 GET state ?conversationId= filters tasks/pending/notes to that conversation', async () => {
-  const timers = manualTimers();
-  const clock = { now: () => 1_000 };
-  const hub = createModelSwitchHub({ clock, timers, graceMs: 60_000 });
-  void hub.expect({ id: 'task-1-5000', model: { provider: 'p', model: 'm' }, conversationId: 'sess-A' });
+test('FIX2 GET state ?conversationId= filters tasks to that conversation', async () => {
   const cache = {
     scheduler: { list: () => [
       { id: 'a1', content: 'A task', sendAt: 5_000, conversationId: 'sess-A' },
       { id: 'b1', content: 'B task', sendAt: 6_000, conversationId: 'sess-B' },
     ] },
-    hub,
-    recentDelivered: [
-      { id: 'a2', content: 'A note', conversationId: 'sess-A', modelFallback: true, deliveredAt: 900 },
-      { id: 'b2', content: 'B note', conversationId: 'sess-B', modelFallback: true, deliveredAt: 900 },
-    ],
-    now: () => clock.now(),
+    now: () => 1_000,
   };
   const ws = fakeWebServer();
   registerScheduledSendRoutes(ws, cache);
@@ -180,7 +140,4 @@ test('FIX2 GET state ?conversationId= filters tasks/pending/notes to that conver
   await route.handler({ method: 'GET', url: STATE_PATH + '?conversationId=sess-A' }, res);
   const body = jsonOf(res);
   assert.deepEqual(body.tasks.map((t) => t.id), ['a1'], 'only session A tasks');
-  assert.deepEqual(body.recentDelivered.map((n) => n.id), ['a2'], 'only session A notes');
-  assert.equal(body.modelSwitchPending.length, 1);
-  assert.equal(body.modelSwitchPending[0].conversationId, 'sess-A', 'only session A pending switches');
 });

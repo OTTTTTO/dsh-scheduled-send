@@ -3,70 +3,21 @@
 // calls POST/DELETE for scheduling. Payloads are display-safe only (no
 // secrets ever leave the host).
 //
-//   GET    /plugin-data/dsh-scheduled-send/state          → {now, tasks[], modelSwitchPending[], recentDelivered[]}
-//   POST   /plugin-data/dsh-scheduled-send/schedule       → create {content, sendAt, conversationId, model?}
+//   GET    /plugin-data/dsh-scheduled-send/state          → {now, tasks[]}
+//   POST   /plugin-data/dsh-scheduled-send/schedule       → create {content, sendAt, conversationId}
 //   DELETE /plugin-data/dsh-scheduled-send/schedule?id=…  → cancel
-//   POST   /plugin-data/dsh-scheduled-send/model-selected → client confirms a model switch
+//
+// The model-switch feature (popover dropdown, model-selected confirm route,
+// pending-switch payload) has been REMOVED. A legacy POST body containing a
+// `model` field is accepted and ignored.
 
 export const STATE_PATH = '/plugin-data/dsh-scheduled-send/state';
 export const SCHEDULE_PATH = '/plugin-data/dsh-scheduled-send/schedule';
-export const MODEL_SELECTED_PATH = '/plugin-data/dsh-scheduled-send/model-selected';
 
 /**
- * Client-cooperative model switch hub. At due time the host asks the browser
- * client (via the state route's modelSwitchPending list) to dir.select the
- * task's model; the client confirms through the model-selected route. If no
- * confirmation arrives within graceMs the switch is treated as failed and
- * delivery degrades to the current model.
- * @param {object} opts { clock:{now}, timers:{setTimeoutAt,clearTimeout}, graceMs }
- */
-export function createModelSwitchHub({ clock = { now: () => Date.now() }, timers = null, graceMs = 15_000 } = {}) {
-  const realTimers = timers || {
-    setTimeoutAt: (fn, atMs) => { const t = setTimeout(fn, Math.max(0, atMs - Date.now())); t.unref?.(); return t; },
-    clearTimeout: (t) => clearTimeout(t),
-  };
-  const pending = new Map(); // taskId → {entry, resolve, timerId}
-
-  const settle = (taskId, ok) => {
-    const rec = pending.get(taskId);
-    if (!rec) return false;
-    pending.delete(taskId);
-    realTimers.clearTimeout(rec.timerId);
-    rec.resolve(ok);
-    return true;
-  };
-
-  return {
-    /** Wait for the client to confirm the model switch for this task. */
-    expect(task) {
-      return new Promise((resolve) => {
-        const timerId = realTimers.setTimeoutAt(() => settle(task.id, false), clock.now() + graceMs);
-        pending.set(task.id, {
-          entry: { taskId: task.id, model: task.model, conversationId: task.conversationId || null },
-          resolve,
-          timerId,
-        });
-      });
-    },
-    /** Client confirmed → true when a pending switch was settled. */
-    confirm(taskId) {
-      if (typeof taskId !== 'string' || !taskId) return Promise.resolve(false);
-      return Promise.resolve(settle(taskId, true));
-    },
-    /** Switches the browser client still owes (state route payload). */
-    pending() {
-      return [...pending.values()].map((r) => ({ ...r.entry }));
-    },
-    async dispose() {
-      for (const taskId of [...pending.keys()]) settle(taskId, false);
-    },
-  };
-}
-
-/**
- * Register all four routes on the host webServer.
+ * Register the routes on the host webServer.
  * @param {object} webServer ctx.webServer (dsh-host-webserver service)
- * @param {object} cache ctx.scheduledSend state: {scheduler, hub, recentDelivered, now}
+ * @param {object} cache ctx.scheduledSend state: {scheduler, now}
  * @returns {() => void} disposer
  */
 export function registerScheduledSendRoutes(webServer, cache) {
@@ -86,18 +37,7 @@ export function registerScheduledSendRoutes(webServer, cache) {
 
   const disposers = [];
 
-  // FIX 3: recentDelivered entries are fallback notes with a limited
-  // lifetime — prune expired ones on read so no note stays resident forever.
-  const pruneNotes = () => {
-    const ttl = typeof cache.noteTtlMs === 'number' ? cache.noteTtlMs : 600_000;
-    const t = now();
-    if (Array.isArray(cache.recentDelivered)) {
-      cache.recentDelivered = cache.recentDelivered.filter((n) => t - (n.deliveredAt ?? 0) < ttl);
-    }
-    return cache.recentDelivered ?? [];
-  };
-
-  // GET state (fix 2: ?conversationId= filters every list to that conversation)
+  // GET state (?conversationId= filters tasks to that conversation)
   disposers.push(webServer.register({
     kind: 'exact',
     path: STATE_PATH,
@@ -111,8 +51,6 @@ export function registerScheduledSendRoutes(webServer, cache) {
       sendJson(res, 200, {
         now: now(),
         tasks: (cache.scheduler?.list?.() ?? []).filter(own),
-        modelSwitchPending: (cache.hub?.pending?.() ?? []).filter(own),
-        recentDelivered: pruneNotes().filter(own),
       });
     },
   }));
@@ -145,28 +83,13 @@ export function registerScheduledSendRoutes(webServer, cache) {
         return;
       }
       if (!conversationId) { sendJson(res, 400, { error: '缺少 conversationId（会话绑定）' }); return; }
-      const model = body.model && typeof body.model === 'object' && body.model.model ? body.model : null;
+      // body.model intentionally ignored (model switching removed)
       try {
-        const task = await cache.scheduler.schedule({ content, sendAt, conversationId, model });
+        const task = await cache.scheduler.schedule({ content, sendAt, conversationId });
         sendJson(res, 200, { task });
       } catch (err) {
         sendJson(res, 400, { error: String(err?.message || err) });
       }
-    },
-  }));
-
-  // POST model-selected (client confirms a pending model switch)
-  disposers.push(webServer.register({
-    kind: 'exact',
-    path: MODEL_SELECTED_PATH,
-    handler: async (req = {}, res) => {
-      if ((req.method || 'POST').toUpperCase() !== 'POST') {
-        sendJson(res, 405, { error: 'method not allowed' });
-        return;
-      }
-      const body = await readBody(req);
-      const ok = await cache.hub?.confirm?.(body?.taskId);
-      sendJson(res, ok ? 200 : 404, ok ? { ok: true } : { error: '无待确认的模型切换' });
     },
   }));
 

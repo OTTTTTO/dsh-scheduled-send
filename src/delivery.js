@@ -7,6 +7,10 @@
 // (@deepseek-ai/dsh-api-session-controller prompt(): createUserMessage with
 // kind:"user" source + followup). If the session is not live or the agent is
 // busy, delivery throws so the scheduler keeps the task queued and retries.
+//
+// Model switching has been REMOVED. Legacy tasks may still carry a `model`
+// field (written by earlier versions); it is silently ignored — the task
+// delivers on the conversation's current model.
 
 export const PLUGIN_NAME = 'dsh-scheduled-send';
 
@@ -56,58 +60,17 @@ export function installAgentTracking(ctx) {
 }
 
 /**
- * HOST-side model switch (fix 1). Mirrors the host's own write path —
- * @deepseek-ai/dsh-agent installModelSelection (lib/index.js:272) couples
- * model selection to the agent-scoped `agent/request` waterfall, and
- * dsh-api-session-controller selectModel (lib/index.js:596) installs the
- * selection for the NEXT request of the live agent. We register the same
- * one-shot `agent/request` override on agent.ctx: the very next LLM request
- * of that agent is routed to {provider, model}, then the listener removes
- * itself. Works with the GUI closed (no browser round-trip).
- * @param {object} agent live agent (needs agent.ctx.on, the scoped context)
- * @param {{provider:string, model:string}} model
- * @returns {{dispose:()=>void}} capability to drop the override early
- */
-export function installHostModelOverride(agent, model) {
-  const agentCtx = agent && agent.ctx;
-  if (!agentCtx || typeof agentCtx.on !== 'function') {
-    throw new Error('宿主代理上下文不可用，无法执行宿主侧模型切换');
-  }
-  let off = null;
-  const dispose = () => {
-    if (off) { const fn = off; off = null; fn(); }
-  };
-  off = agentCtx.on('agent/request', async (_payload, next) => {
-    const resolved = await next();
-    dispose(); // one-shot: only the next request is switched
-    return {
-      ...resolved,
-      provider: model.provider,
-      model: model.model,
-    };
-  });
-  return { dispose };
-}
-
-/**
  * Build the delivery callback for the scheduler: inject one due task into the
  * live session of its conversation as a follow-up user message.
  * @param {object} p
  * @param {{live:()=>any[]}} p.tracking agent tracking from installAgentTracking
  * @param {(spec:object)=>object} [p.createUserMessage] message factory (injectable)
- * @param {(agent:object, model:object)=>{dispose:()=>void}} [p.installModelOverride]
- *        host-side switch (default installHostModelOverride); throws/returns
- *        falsy when unavailable → falls back to the client-cooperative hook.
- * @param {(item:object)=>Promise<{ok:boolean, error?:string}>} [p.switchModel]
- *        client-cooperative FALLBACK hook (dir.select); optional.
  * @param {string} [p.pluginName]
- * @returns {(item:{id:string, content:string, conversationId?:string, model?:object}) => Promise<true|{modelFallback:true, modelError:string}>}
+ * @returns {(item:{id:string, content:string, conversationId?:string, model?:object}) => Promise<true>}
  */
 export function createFollowupDelivery({
   tracking,
   createUserMessage = defaultCreateUserMessage,
-  installModelOverride = installHostModelOverride,
-  switchModel = null,
   pluginName = PLUGIN_NAME,
 } = {}) {
   return async function deliver(item) {
@@ -123,45 +86,16 @@ export function createFollowupDelivery({
       err.code = 'NO_LIVE_AGENT';
       throw err;
     }
-    // model pre-switch (fix 1): prefer the HOST-side one-shot agent/request
-    // override (works headless, GUI closed); the client-cooperative hook is
-    // only a fallback; total failure degrades to the CURRENT model with a
-    // dismissible note on the task entry (spec: 切换失败降级).
-    let modelFallback = null;
-    let override = null;
-    if (item.model) {
-      try {
-        if (typeof installModelOverride === 'function') override = installModelOverride(agent, item.model);
-      } catch {
-        override = null; // host path unavailable → try the fallback below
-      }
-      if (!override) {
-        if (typeof switchModel === 'function') {
-          const r = await switchModel(item).catch((err) => ({ ok: false, error: String(err?.message || err) }));
-          if (!r || r.ok !== true) modelFallback = { modelError: r?.error || 'model switch failed' };
-        } else {
-          modelFallback = { modelError: '无可用模型切换通道' };
-        }
-      }
-    }
     const message = createUserMessage({
       content: [{ type: 'text', text: item.content }],
       source: { kind: 'user', via: pluginName },
     });
     // runMaintenance throws when the agent is mid-turn (busy) — the throw
-    // propagates so the scheduler re-queues with backoff. The pending host
-    // override is dropped so it cannot leak into a later unrelated request
-    // (the retry re-installs it).
-    try {
-      await agent.runMaintenance(async () => {
-        agent.followup(message);
-        return true;
-      });
-    } catch (err) {
-      override?.dispose?.();
-      throw err;
-    }
-    if (modelFallback) return { modelFallback: true, modelError: modelFallback.modelError };
+    // propagates so the scheduler re-queues with backoff.
+    await agent.runMaintenance(async () => {
+      agent.followup(message);
+      return true;
+    });
     return true;
   };
 }

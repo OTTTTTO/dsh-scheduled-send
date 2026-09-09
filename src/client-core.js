@@ -1,10 +1,24 @@
 // Client-layer core for dsh-scheduled-send (browser side, framework-free and
 // testable in Node). The lib/client.js bundle wraps this with React/slots.
 
-export const COLLAPSE_THRESHOLD = 3;
+/** Media query marking the mobile layout (FIX 5). */
+export const MOBILE_QUERY = '(max-width: 480px)';
 
-/** Client-side note lifetime (fix 3): notes older than this are not rendered. */
-export const NOTE_TTL_MS = 600_000;
+/**
+ * Grace window during which a freshly POSTed task survives a refresh whose
+ * server snapshot was taken BEFORE the task existed (FIX 4 race).
+ */
+export const LOCAL_ADD_GRACE_MS = 10_000;
+
+/** Safe matchMedia probe: never throws, false when unavailable. */
+export function isMobileViewport(matchMedia) {
+  try {
+    if (typeof matchMedia !== 'function') return false;
+    return !!matchMedia(MOBILE_QUERY)?.matches;
+  } catch {
+    return false;
+  }
+}
 
 /** Sort a task list by sendAt ascending (display order). */
 export function sortTasks(tasks) {
@@ -12,15 +26,30 @@ export function sortTasks(tasks) {
 }
 
 /**
- * Collapse rule for the dock: more than COLLAPSE_THRESHOLD entries render as
- * a single "N 条定时任务 ⌄" summary row the user can expand.
+ * Collapse rule for the dock (FIX 2):
+ *  - default (desktop): >1 entry → show ONLY the soonest (sendAt-min) entry
+ *    plus a 「其余 N 条定时任务 ⌄」 summary toggle; ≤1 entry → expanded.
+ *  - default (mobile): fully collapsed (summary only).
+ *  - user 'expanded' → all entries; user 'collapsed' → nothing but the
+ *    summary (manual collapse-all works for ANY count, including 1).
+ * @param {Array} tasks already sorted ascending by sendAt
+ * @param {{user?: 'expanded'|'collapsed'|null, mobile?: boolean}} [opts]
  */
-export function collapseState(tasks) {
+export function collapseState(tasks, { user = null, mobile = false } = {}) {
   const list = tasks || [];
-  if (list.length <= COLLAPSE_THRESHOLD) {
-    return { collapsed: false, visibleCount: list.length, summary: null };
+  if (!list.length) {
+    return { display: 'expanded', visibleCount: 0, hiddenCount: 0, summary: null, collapsed: false };
   }
-  return { collapsed: true, visibleCount: list.length, summary: `${list.length} 条定时任务 ⌄` };
+  let display = mobile ? 'summary' : (list.length > 1 ? 'one' : 'expanded');
+  if (user === 'expanded') display = 'expanded';
+  else if (user === 'collapsed') display = list.length > 1 ? 'one' : 'summary';
+  if (display === 'one') {
+    return { display, visibleCount: 1, hiddenCount: list.length - 1, summary: `其余 ${list.length - 1} 条定时任务 ⌄`, collapsed: true };
+  }
+  if (display === 'summary') {
+    return { display, visibleCount: 0, hiddenCount: list.length, summary: `${list.length} 条定时任务 ⌄`, collapsed: true };
+  }
+  return { display: 'expanded', visibleCount: list.length, hiddenCount: 0, summary: '收起 ⌃', collapsed: false };
 }
 
 /** Local-timezone "YYYY-MM-DD HH:mm" for a planned send time. */
@@ -51,73 +80,109 @@ export function defaultSendAt(now = Date.now(), offsetMs = 5 * 60_000) {
 
 /**
  * Stateful client controller: polls the host state route, holds the visible
- * task list (optimistically extended right after POST so new entries show
- * WITHOUT a refresh), cooperates in due-time model switches (dir.select then
- * confirm), and exposes cancel.
+ * task list (extended with the server-confirmed task right after POST so new
+ * entries show WITHOUT a refresh), and exposes cancel.
+ *
+ * FIX 1: setSession() reports session changes so the view can refresh
+ * immediately; refresh failures keep the LAST data and surface an error
+ * instead of flashing empty.
+ *
+ * FIX 4: refresh() merges by id — a recently POSTed task (within
+ * LOCAL_ADD_GRACE_MS) survives a stale server snapshot that predates it.
+ *
  * @param {object} deps
  * @param {() => Promise<object>} deps.fetchState GET the host state route
  * @param {(payload:object)=>Promise<{task:object}>} deps.postSchedule
  * @param {(id:string)=>Promise<boolean>} deps.cancelSchedule
- * @param {(taskId:string)=>Promise<boolean>} [deps.confirmModelSwitch]
- * @param {(model:{provider:string,model:string})=>Promise<void>} [deps.selectModel]
  * @param {() => number} [deps.now]
  */
-export function createScheduledClientState({ fetchState, postSchedule, cancelSchedule, confirmModelSwitch, selectModel, now = () => Date.now() } = {}) {
+export function createScheduledClientState({ fetchState, postSchedule, cancelSchedule, now = () => Date.now() } = {}) {
   let tasks = [];
-  let modelSwitchPending = [];
-  let delivered = [];
+  let error = null;
   let timer = null;
   let stopped = false;
-  let sessionId = null; // FIX 2: this dock belongs to exactly one conversation
-  const handledSwitches = new Set();
+  let sessionId = null; // this dock belongs to exactly one conversation
+  const recentAdds = new Map(); // id → addedAt (FIX 4 grace window)
 
-  // strict conversation filter (fix 2): with a session bound, only entries
-  // belonging to THIS conversation are ever visible; other-session tasks are
-  // dropped from the local list on every refresh.
+  // strict conversation filter: with a session bound, only entries belonging
+  // to THIS conversation are ever visible; other-session tasks are dropped
+  // from the local list on every refresh.
   const own = (it) => !sessionId || !it?.conversationId || it.conversationId === sessionId;
+  const dedupeById = (list) => {
+    const seen = new Set();
+    return list.filter((t) => (t?.id && !seen.has(t.id) ? (seen.add(t.id), true) : false));
+  };
 
   return {
-    /** Bind this client to one conversation (called by both slot injects). */
+    /**
+     * Bind this client to one conversation. Returns true when the session
+     * actually CHANGED (the view refreshes immediately in that case — FIX 1).
+     */
     setSession(sid) {
-      sessionId = sid || null;
-      tasks = tasks.filter(own);
+      const next = sid || null;
+      const changed = next !== sessionId;
+      sessionId = next;
+      if (changed) tasks = tasks.filter(own);
+      return changed;
+    },
+
+    /** Session this client is currently bound to (view fetch uses it). */
+    currentSession() {
+      return sessionId;
     },
 
     /** Pending tasks sorted ascending by sendAt, own session only. */
     visibleTasks() {
       return sortTasks(tasks).filter(own);
     },
-    /** Dismissible model-fallback notes (own session, within NOTE_TTL_MS). */
-    lastDelivered() {
-      const t = now();
-      return delivered.filter(own).filter((n) => n.modelFallback && t - (n.deliveredAt ?? 0) < NOTE_TTL_MS);
-    },
-    /** Switches the client still owes (own-session filtering at call time). */
-    pendingSwitches() {
-      return modelSwitchPending.filter(own);
+    /** Last refresh error, or null (view shows old data + this line). */
+    lastError() {
+      return error;
     },
     snapshot() {
-      return { tasks: sortTasks(tasks).filter(own), modelSwitchPending: modelSwitchPending.filter(own), recentDelivered: delivered.filter(own), fetchedAt: now() };
+      return { tasks: sortTasks(tasks).filter(own), error, fetchedAt: now() };
     },
 
     async refresh() {
-      const s = await fetchState();
-      tasks = (s?.tasks ?? []).filter(own); // strict: stale other-session cache never survives a refresh
-      modelSwitchPending = s?.modelSwitchPending ?? [];
-      delivered = s?.recentDelivered ?? [];
+      let s;
+      try {
+        s = await fetchState();
+      } catch (err) {
+        // FIX 1 failure mode: keep the previous list, surface the error —
+        // never flash an empty dock on a transient failure.
+        error = String(err?.message || err);
+        return this.snapshot();
+      }
+      error = null;
+      const server = (s?.tasks ?? []).filter(own);
+      // FIX 4: keep freshly POSTed tasks whose id the (possibly stale) server
+      // snapshot does not know yet; the server list stays authoritative for
+      // everything else (cancellations included).
+      const t = now();
+      const freshLocal = tasks.filter(
+        (it) => it?.id && !server.some((x) => x.id === it.id) && own(it) && t - (recentAdds.get(it.id) ?? -Infinity) < LOCAL_ADD_GRACE_MS,
+      );
+      for (const id of [...recentAdds.keys()]) {
+        if (t - recentAdds.get(id) >= LOCAL_ADD_GRACE_MS || server.some((x) => x.id === id)) recentAdds.delete(id);
+      }
+      tasks = dedupeById([...server, ...freshLocal]);
       return this.snapshot();
     },
 
     /**
      * User-facing schedule entry: POST to the host route and locally enqueue
-     * the returned task so it is visible IMMEDIATELY (无需刷新立即显示).
-     * Entries from another conversation are never enqueued locally (fix 2).
+     * the SERVER-RETURNED task so it is visible IMMEDIATELY (无需刷新立即显示,
+     * id-deduped). Nothing is added on failure, so the view keeps the form
+     * with its content intact (失败回滚保留表单).
      */
     async scheduleMessage(payload) {
       if (!postSchedule) throw new Error('postSchedule 未配置');
       const result = await postSchedule(payload);
       const task = result?.task ?? result;
-      if (task?.id && own(task) && !tasks.some((t) => t.id === task.id)) tasks = [...tasks, task];
+      if (task?.id && own(task)) {
+        tasks = dedupeById([...tasks, task]);
+        recentAdds.set(task.id, now());
+      }
       return task;
     },
 
@@ -125,32 +190,7 @@ export function createScheduledClientState({ fetchState, postSchedule, cancelSch
     async cancelTask(id) {
       if (cancelSchedule) await cancelSchedule(id);
       tasks = tasks.filter((t) => t.id !== id);
-    },
-
-    /** FIX 3: dismiss one fallback note so it disappears immediately. */
-    dismissNote(id) {
-      delivered = delivered.filter((n) => n.id !== id);
-    },
-
-    /**
-     * Due-time model switch cooperation: for each pending switch bound to
-     * THIS session, dir.select the model then POST the confirmation. Each
-     * taskId is handled at most once per client lifetime.
-     */
-    async handleModelSwitches(sessionId) {
-      if (typeof selectModel !== 'function' || typeof confirmModelSwitch !== 'function') return;
-      for (const entry of this.pendingSwitches() || []) {
-        if (!entry?.taskId || handledSwitches.has(entry.taskId)) continue;
-        if (entry.conversationId && sessionId && entry.conversationId !== sessionId) continue;
-        handledSwitches.add(entry.taskId); // mark first: never double-select
-        try {
-          await selectModel(entry.model);
-          await confirmModelSwitch(entry.taskId);
-        } catch {
-          // switch failed: leave the entry; host times out and degrades to
-          // the current model with a surfaced note.
-        }
-      }
+      recentAdds.delete(id);
     },
 
     start(intervalMs = 4_000) {

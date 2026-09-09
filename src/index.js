@@ -1,12 +1,13 @@
 // dsh-scheduled-send — host-side cordis plugin entry.
 // Assembles the scheduled-send service: persistent task queue (scheduler),
 // due-time delivery into the ORIGINAL conversation as a normal user bubble
-// (delivery), the client-cooperative model switch (hub), and the host HTTP
-// routes the browser client talks to (host-routes).
+// (delivery), and the host HTTP routes the browser client talks to
+// (host-routes). Model switching has been REMOVED: legacy tasks carrying a
+// `model` field deliver normally with the field ignored.
 
 import { createScheduler } from './scheduler.js';
 import { installAgentTracking, createFollowupDelivery } from './delivery.js';
-import { registerScheduledSendRoutes, createModelSwitchHub } from './host-routes.js';
+import { registerScheduledSendRoutes } from './host-routes.js';
 
 /**
  * Cordis plugin metadata: the loader reads the named `inject` export to wire
@@ -18,7 +19,7 @@ export const name = 'dsh-scheduled-send';
 
 /**
  * @param {object} ctx host plugin context
- * @param {object} [config] {dataDir, modelSwitchGraceMs} overrides
+ * @param {object} [config] {dataDir} overrides
  * @param {object} [deps] test hooks: trackAgents(ctx), createUserMessage(spec),
  *        deliverDue(item), clock, timers.
  */
@@ -31,39 +32,22 @@ export async function apply(ctx, config = {}, deps = {}) {
   // their original conversation even across restarts (会话绑定+补发).
   const tracking = deps.trackAgents ? deps.trackAgents(ctx) : installAgentTracking(ctx);
 
-  // client-cooperative model switch: at due time the browser client is asked
-  // (via the state route) to dir.select the task's model; no confirmation
-  // within the grace window → degrade to the current model with a note.
-  const hub = createModelSwitchHub({ clock, timers, graceMs: config.modelSwitchGraceMs ?? 15_000 });
-
   const cache = {
     dataDir,
-    recentDelivered: [], // dismissible fallback notes only (fix 3)
     now: () => clock.now(),
-    noteTtlMs: config.noteTtlMs ?? 600_000, // notes expire after 10 minutes
   };
 
   const deliverDue = deps.deliverDue ?? createFollowupDelivery({
     tracking,
     createUserMessage: deps.createUserMessage,
-    switchModel: async (item) => ({ ok: await hub.expect(item) }),
   });
 
   cache.scheduler = await createScheduler({
     dataDir,
     clock,
     timers,
-    deliver: async (task) => {
-      const r = await deliverDue(task); // throws keep the task queued (retry/补发)
-      // FIX 3 (lifecycle bug): a CLEAN delivery leaves NO note — only actual
-      // model-switch degradations surface, and only on their own entry.
-      if (r && r.modelFallback) {
-        const entry = { ...task, deliveredAt: clock.now(), modelFallback: true, modelError: r.modelError };
-        cache.recentDelivered = [entry, ...cache.recentDelivered].slice(0, 20);
-      }
-    },
+    deliver: deliverDue,
   });
-  cache.hub = hub;
   cache.agentTracking = tracking;
 
   // cordis Context is a proxy: arbitrary properties must be registered as
@@ -81,7 +65,6 @@ export async function apply(ctx, config = {}, deps = {}) {
   ctx.on?.('dispose', () => {
     cache.scheduler?.dispose?.();
     tracking.dispose?.();
-    hub.dispose?.();
     cache.disposeRoutes?.();
   });
 

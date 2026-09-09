@@ -1,10 +1,11 @@
 // Red/green TDD: client core — pure logic testable in Node (sorting, collapse,
-// immediate local enqueue after POST, model-switch cooperation, cancel).
+// immediate server-authoritative enqueue after POST, session-switch refresh,
+// mobile detection, cancel).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   sortTasks, collapseState, formatLocalTime, formatCountdown,
-  createScheduledClientState, defaultSendAt,
+  createScheduledClientState, defaultSendAt, isMobileViewport,
 } from '../src/client-core.js';
 
 test('sortTasks orders by sendAt ascending', () => {
@@ -15,14 +16,61 @@ test('sortTasks orders by sendAt ascending', () => {
   assert.deepEqual(sortTasks(null), []);
 });
 
-test('collapseState: ≤3 entries shown flat; >3 collapse into a summary row', () => {
-  const three = [{ id: 1 }, { id: 2 }, { id: 3 }];
-  assert.deepEqual(collapseState(three), { collapsed: false, visibleCount: 3, summary: null });
-  const four = [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }];
-  const st = collapseState(four);
-  assert.equal(st.collapsed, true);
-  assert.equal(st.visibleCount, 4);
-  assert.equal(st.summary, '4 条定时任务 ⌄');
+test('collapseState: 0/1 entries default expanded; >1 default shows ONLY the soonest entry + 「其余 N 条定时任务 ⌄」', () => {
+  assert.deepEqual(
+    collapseState([]),
+    { display: 'expanded', visibleCount: 0, hiddenCount: 0, summary: null, collapsed: false },
+  );
+  const one = collapseState([{ id: 1 }]);
+  assert.equal(one.display, 'expanded');
+  assert.equal(one.visibleCount, 1);
+  assert.equal(one.summary, '收起 ⌃', 'single entry still manually collapsible');
+  const two = collapseState([{ id: 1 }, { id: 2 }]);
+  assert.equal(two.display, 'one', '>1 entries default to one-visible');
+  assert.equal(two.visibleCount, 1);
+  assert.equal(two.hiddenCount, 1);
+  assert.equal(two.summary, '其余 1 条定时任务 ⌄');
+  const four = collapseState([{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }]);
+  assert.equal(four.display, 'one');
+  assert.equal(four.summary, '其余 3 条定时任务 ⌄');
+});
+
+test('collapseState: manual expand shows all; manual collapse works for ANY count including 1', () => {
+  const expanded = collapseState([{ id: 1 }, { id: 2 }, { id: 3 }], { user: 'expanded' });
+  assert.equal(expanded.display, 'expanded');
+  assert.equal(expanded.visibleCount, 3);
+  assert.equal(expanded.summary, '收起 ⌃');
+  const collapsedTwo = collapseState([{ id: 1 }, { id: 2 }], { user: 'collapsed' });
+  assert.equal(collapsedTwo.display, 'one', '>1 entries collapse back to 1 + rest-summary');
+  assert.equal(collapsedTwo.visibleCount, 1);
+  assert.equal(collapsedTwo.summary, '其余 1 条定时任务 ⌄');
+  const oneCollapsed = collapseState([{ id: 1 }], { user: 'collapsed' });
+  assert.equal(oneCollapsed.display, 'summary', 'a single entry can be collapsed entirely');
+  assert.equal(oneCollapsed.visibleCount, 0);
+  assert.equal(oneCollapsed.summary, '1 条定时任务 ⌄');
+});
+
+test('collapseState: mobile defaults to fully collapsed (summary only) even for 1 entry', () => {
+  const m1 = collapseState([{ id: 1 }], { mobile: true });
+  assert.equal(m1.display, 'summary');
+  assert.equal(m1.visibleCount, 0);
+  assert.equal(m1.summary, '1 条定时任务 ⌄');
+  const m3 = collapseState([{ id: 1 }, { id: 2 }, { id: 3 }], { mobile: true });
+  assert.equal(m3.display, 'summary');
+  assert.equal(m3.summary, '3 条定时任务 ⌄');
+  // manual expand wins over the mobile default
+  const me = collapseState([{ id: 1 }], { mobile: true, user: 'expanded' });
+  assert.equal(me.display, 'expanded');
+  assert.equal(me.visibleCount, 1);
+});
+
+test('isMobileViewport reads matchMedia((max-width:480px)) safely', () => {
+  const mm = (q) => ({ matches: q.includes('480') });
+  assert.equal(isMobileViewport(mm), true);
+  const mmNo = () => ({ matches: false });
+  assert.equal(isMobileViewport(mmNo), false);
+  assert.equal(isMobileViewport(null), false, 'no matchMedia → desktop');
+  assert.equal(isMobileViewport(() => { throw new Error('x'); }), false, 'never throws');
 });
 
 test('formatLocalTime renders local YYYY-MM-DD HH:mm', () => {
@@ -41,10 +89,10 @@ test('defaultSendAt = now + 5 minutes', () => {
   assert.equal(defaultSendAt(1_000), 1_000 + 5 * 60_000);
 });
 
-test('scheduleMessage POSTs and shows the task IMMEDIATELY (no refresh needed)', async () => {
+test('scheduleMessage POSTs and shows the server task IMMEDIATELY (no refresh needed)', async () => {
   const posted = [];
   const core = createScheduledClientState({
-    fetchState: async () => ({ now: 0, tasks: [], modelSwitchPending: [], recentDelivered: [] }),
+    fetchState: async () => ({ now: 0, tasks: [] }),
     postSchedule: async (payload) => {
       posted.push(payload);
       return { task: { id: 't1', ...payload } };
@@ -52,16 +100,27 @@ test('scheduleMessage POSTs and shows the task IMMEDIATELY (no refresh needed)',
     cancelSchedule: async () => true,
     now: () => 0,
   });
-  const task = await core.scheduleMessage({ content: 'hi', sendAt: 5_000, conversationId: 's1', model: { provider: 'p', model: 'm' } });
+  const task = await core.scheduleMessage({ content: 'hi', sendAt: 5_000, conversationId: 's1' });
   assert.equal(task.id, 't1');
-  assert.deepEqual(posted[0], { content: 'hi', sendAt: 5_000, conversationId: 's1', model: { provider: 'p', model: 'm' } });
-  assert.equal(core.visibleTasks().length, 1, 'locally enqueued right after POST');
+  assert.deepEqual(posted[0], { content: 'hi', sendAt: 5_000, conversationId: 's1' });
+  assert.equal(core.visibleTasks().length, 1, 'server-returned task enqueued right after POST');
   assert.equal(core.visibleTasks()[0].content, 'hi');
+});
+
+test('scheduleMessage failure enqueues NOTHING (no optimistic ghost entry)', async () => {
+  const core = createScheduledClientState({
+    fetchState: async () => ({ now: 0, tasks: [] }),
+    postSchedule: async () => { throw new Error('HTTP 500'); },
+    cancelSchedule: async () => true,
+    now: () => 0,
+  });
+  await assert.rejects(() => core.scheduleMessage({ content: 'x', sendAt: 5, conversationId: 's' }), /HTTP 500/);
+  assert.equal(core.visibleTasks().length, 0, 'nothing added on failure → form can be kept');
 });
 
 test('cancelTask removes the entry locally', async () => {
   const core = createScheduledClientState({
-    fetchState: async () => ({ now: 0, tasks: [], modelSwitchPending: [], recentDelivered: [] }),
+    fetchState: async () => ({ now: 0, tasks: [] }),
     postSchedule: async (p) => ({ task: { id: 't1', ...p } }),
     cancelSchedule: async () => true,
     now: () => 0,
@@ -71,69 +130,105 @@ test('cancelTask removes the entry locally', async () => {
   assert.equal(core.visibleTasks().length, 0);
 });
 
-test('refresh replaces the task list with the server view (sorted)', async () => {
-  let server = { now: 0, tasks: [], modelSwitchPending: [], recentDelivered: [] };
+test('refresh replaces the task list with the server view (sorted, id-deduped)', async () => {
+  let server = { now: 0, tasks: [] };
   const core = createScheduledClientState({
     fetchState: async () => server,
     postSchedule: async () => ({}),
     cancelSchedule: async () => true,
     now: () => 0,
   });
-  server = { now: 0, tasks: [{ id: 'z', sendAt: 9 }, { id: 'y', sendAt: 2 }], modelSwitchPending: [], recentDelivered: [] };
+  server = { now: 0, tasks: [{ id: 'z', sendAt: 9 }, { id: 'y', sendAt: 2 }] };
   await core.refresh();
   assert.deepEqual(core.visibleTasks().map((t) => t.id), ['y', 'z']);
-  assert.equal(core.lastDelivered().length, 0);
-  const note = { id: 'z', content: 'x', modelFallback: true, modelError: 'offline', deliveredAt: 5 };
-  server = { now: 6, tasks: [], modelSwitchPending: [], recentDelivered: [note] };
+  // server list containing the same id as a local add → no duplicate
+  server = { now: 0, tasks: [{ id: 'z', sendAt: 9 }, { id: 'y', sendAt: 2 }, { id: 't9', sendAt: 5 }] };
   await core.refresh();
-  assert.deepEqual(core.lastDelivered(), [note], 'model-fallback notes surface for the dock');
+  assert.equal(core.visibleTasks().filter((t) => t.id === 't9').length, 1, 'id dedupe on merge');
 });
 
-test('model-switch cooperation: switches via dir.select then confirms, once per taskId, own session only', async () => {
-  let server = {
-    now: 0,
-    tasks: [],
-    modelSwitchPending: [
-      { taskId: 't1', model: { provider: 'p', model: 'flash' }, conversationId: 'my-sess' },
-      { taskId: 't2', model: { provider: 'p', model: 'flash' }, conversationId: 'other-sess' },
-    ],
-    recentDelivered: [],
-  };
-  const selected = [];
-  const confirmed = [];
+test('refresh failure keeps the LAST data and surfaces an error (no flash-to-empty)', async () => {
+  let fail = false;
+  const core = createScheduledClientState({
+    fetchState: async () => {
+      if (fail) throw new Error('state HTTP 500');
+      return { now: 0, tasks: [{ id: 'a', sendAt: 2, conversationId: 's' }] };
+    },
+    postSchedule: async () => ({}),
+    cancelSchedule: async () => true,
+    now: () => 0,
+  });
+  core.setSession('s');
+  await core.refresh();
+  assert.equal(core.visibleTasks().length, 1);
+  fail = true;
+  await core.refresh();
+  assert.equal(core.visibleTasks().length, 1, 'old data retained on failure');
+  assert.match(core.lastError(), /500/);
+  fail = false;
+  await core.refresh();
+  assert.equal(core.lastError(), null, 'error cleared on next success');
+});
+
+// --- FIX 4: stale-refresh race ------------------------------------------------
+test('FIX4 race: a refresh initiated BEFORE the POST but resolved AFTER does not wipe the new entry', async () => {
+  let resolveStale;
+  const stale = new Promise((r) => { resolveStale = r; });
+  let serverList = { now: 0, tasks: [] }; // stale snapshot WITHOUT the new task
+  const core = createScheduledClientState({
+    fetchState: async () => (await stale) ?? serverList,
+    postSchedule: async (p) => ({ task: { id: 't-new', ...p } }),
+    cancelSchedule: async () => true,
+    now: () => 0,
+  });
+  core.setSession('s');
+  const pending = core.refresh(); // poll fired before the POST was registered server-side
+  await core.scheduleMessage({ content: 'mine', sendAt: 9_000, conversationId: 's' });
+  assert.equal(core.visibleTasks().map((t) => t.id).includes('t-new'), true);
+  resolveStale({ now: 0, tasks: [] }); // stale response arrives late
+  await pending;
+  assert.equal(core.visibleTasks().map((t) => t.id).includes('t-new'), true, 'recent local add survives a stale overwrite');
+});
+
+test('FIX4: local add eventually yields to the authoritative server view (grace expires)', async () => {
+  const clock = { t: 0 };
+  const core = createScheduledClientState({
+    fetchState: async () => ({ now: 0, tasks: [] }),
+    postSchedule: async (p) => ({ task: { id: 't-new', ...p } }),
+    cancelSchedule: async () => true,
+    now: () => clock.t,
+  });
+  await core.scheduleMessage({ content: 'mine', sendAt: 9_000, conversationId: null });
+  clock.t = 60_000; // far past the local-add grace window
+  await core.refresh();
+  assert.equal(core.visibleTasks().length, 0, 'server list wins once the grace window is over');
+});
+
+// --- FIX 1: session switch ----------------------------------------------------
+test('FIX1 core: setSession reports the change and the next refresh filters to the new session', async () => {
+  let server = { now: 0, tasks: [] };
   const core = createScheduledClientState({
     fetchState: async () => server,
     postSchedule: async () => ({}),
     cancelSchedule: async () => true,
-    confirmModelSwitch: async (taskId) => { confirmed.push(taskId); return true; },
-    selectModel: async (model) => { selected.push(model); },
     now: () => 0,
   });
+  core.setSession('sess-A');
+  assert.equal(core.setSession('sess-A'), false, 'same session → no change');
+  assert.equal(core.setSession('sess-B'), true, 'switch detected');
+  server = {
+    now: 0,
+    tasks: [
+      { id: 'a', sendAt: 2, conversationId: 'sess-A' },
+      { id: 'b', sendAt: 3, conversationId: 'sess-B' },
+    ],
+  };
   await core.refresh();
-  await core.handleModelSwitches('my-sess');
-  assert.deepEqual(selected, [{ provider: 'p', model: 'flash' }], 'only own-session switch executed');
-  assert.deepEqual(confirmed, ['t1']);
-  await core.handleModelSwitches('my-sess');
-  assert.equal(selected.length, 1, 'no duplicate switch for the same taskId');
+  assert.deepEqual(core.visibleTasks().map((t) => t.id), ['b'], 'only the NEW session tasks survive the refresh');
 });
 
-test('start/stop poll loop drives refresh', async () => {
-  let fetched = 0;
-  const core = createScheduledClientState({
-    fetchState: async () => { fetched++; return { now: 0, tasks: [], modelSwitchPending: [], recentDelivered: [] }; },
-    postSchedule: async () => ({}),
-    cancelSchedule: async () => true,
-    now: () => 0,
-  });
-  core.start(5);
-  await new Promise((r) => setTimeout(r, 20));
-  core.stop();
-  assert.ok(fetched >= 1, 'at least one fetch happened');
-});
-
-// --- FIX 2: session isolation -------------------------------------------------
-test('FIX2 session isolation: setSession filters tasks/notes/switches; other-session leftovers cleared', async () => {
-  let server = { now: 0, tasks: [], modelSwitchPending: [], recentDelivered: [] };
+test('FIX2 session isolation: setSession filters tasks; other-session leftovers cleared; own-session schedule shows', async () => {
+  let server = { now: 0, tasks: [] };
   const core = createScheduledClientState({
     fetchState: async () => server,
     postSchedule: async (p) => ({ task: { id: 't9', ...p } }),
@@ -147,35 +242,23 @@ test('FIX2 session isolation: setSession filters tasks/notes/switches; other-ses
       { id: 'a', sendAt: 2, conversationId: 'sess-A' },
       { id: 'b', sendAt: 3, conversationId: 'sess-B' },
     ],
-    modelSwitchPending: [
-      { taskId: 'pa', model: { provider: 'p', model: 'm' }, conversationId: 'sess-A' },
-      { taskId: 'pb', model: { provider: 'p', model: 'm' }, conversationId: 'sess-B' },
-    ],
-    recentDelivered: [
-      { id: 'na', content: 'x', modelFallback: true, modelError: 'e', conversationId: 'sess-A', deliveredAt: 0 },
-      { id: 'nb', content: 'y', modelFallback: true, modelError: 'e', conversationId: 'sess-B', deliveredAt: 0 },
-    ],
   };
   await core.refresh();
   assert.deepEqual(core.visibleTasks().map((t) => t.id), ['a'], 'only own-session tasks visible');
-  assert.deepEqual(core.pendingSwitches().map((s) => s.taskId), ['pa']);
-  assert.deepEqual(core.lastDelivered().map((n) => n.id), ['na'], 'only own-session notes');
-  // optimistic local add from another session must not leak in
   await core.scheduleMessage({ content: 'mine', sendAt: 9, conversationId: 'sess-A' });
   assert.deepEqual(core.visibleTasks().map((t) => t.id), ['a', 't9']);
 });
 
-// --- FIX 3: dismissible notes -------------------------------------------------
-test('FIX3 dismissNote removes the note locally; non-fallback deliveries never surface notes', async () => {
-  let server = { now: 0, tasks: [], modelSwitchPending: [], recentDelivered: [
-    { id: 'n1', content: 'x', modelFallback: true, modelError: 'offline', conversationId: 's', deliveredAt: 0 },
-    { id: 'n2', content: 'y', modelFallback: false, conversationId: 's', deliveredAt: 0 },
-  ] };
-  const core = createScheduledClientState({ fetchState: async () => server, postSchedule: async () => ({}), cancelSchedule: async () => true, now: () => 0 });
-  core.setSession('s');
-  await core.refresh();
-  const notes = core.lastDelivered();
-  assert.equal(notes.length, 1, 'clean deliveries carry no note');
-  core.dismissNote('n1');
-  assert.equal(core.lastDelivered().length, 0, 'dismissed note gone');
+test('start/stop poll loop drives refresh', async () => {
+  let fetched = 0;
+  const core = createScheduledClientState({
+    fetchState: async () => { fetched++; return { now: 0, tasks: [] }; },
+    postSchedule: async () => ({}),
+    cancelSchedule: async () => true,
+    now: () => 0,
+  });
+  core.start(5);
+  await new Promise((r) => setTimeout(r, 20));
+  core.stop();
+  assert.ok(fetched >= 1, 'at least one fetch happened');
 });
