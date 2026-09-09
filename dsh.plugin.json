@@ -1,6 +1,6 @@
 {
   "id": "@ottttto/dsh-scheduled-send",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "main": "./src/index.js",
   "description": "定时发送：到点以你的身份把消息作为正常用户气泡发进当前会话，无人值守、会话隔离、断电补发。Scheduled send for DSH — fires as a normal user bubble into the bound conversation, unattended, per-session isolated, restart-safe.",
   "engines": {

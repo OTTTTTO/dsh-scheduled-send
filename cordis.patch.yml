@@ -2,10 +2,15 @@
 # Note: this insert row mounts a fresh plugin; it does NOT override existing
 # loader rows, so no config re-statement is required.
 #
+# IMPORTANT: `name` must be the exact npm package name — the loader resolves
+# it as a package import from ~/.dsh/profiles/web/node_modules. The bare name
+# "dsh-scheduled-send" breaks npm/market installs (ERR_MODULE_NOT_FOUND on
+# machines without the local path install); the scoped name must be quoted.
+#
 # No config block here on purpose: apply() resolves the data directory itself
 # ($HOME/.dsh/dsh-scheduled-send). Loader patch values are applied literally —
 # brace-style {{ }} template placeholders are NOT evaluated, and a template
 # dataDir would create a literally-named placeholder directory.
 - insert:
     - id: dsh-scheduled-send
-      name: dsh-scheduled-send
+      name: "@ottttto/dsh-scheduled-send"
