@@ -330,3 +330,28 @@ test('panel mode: an UNBOUND client (setSession(null)) sees ALL sessions sorted 
   await core.cancelTask('b');
   assert.deepEqual(core.visibleTasks().map((t) => t.id), ['a', 'c'], 'cross-session cancel drops the entry');
 });
+
+// instant cancel: local removal happens before the DELETE roundtrip, and the
+// cross-instance onChanged hook lets the sidebar panel refresh immediately
+test('cancelTask removes locally without waiting for DELETE and notifies onChanged', async () => {
+  const deletes = [];
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const core = createScheduledClientState({
+    fetchState: async () => ({ tasks: [{ id: 't1', content: 'x', sendAt: 1, conversationId: 's1' }] }),
+    cancelSchedule: async (id) => { deletes.push(id); await gate; return true; },
+    now: () => 0,
+  });
+  core.setSession('s1');
+  await core.refresh();
+  assert.equal(core.visibleTasks().length, 1);
+  let notified = false;
+  core.onChanged = () => { notified = true; };
+  const p = core.cancelTask('t1');
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(core.visibleTasks().length, 0, 'removed locally BEFORE the DELETE resolves');
+  assert.deepEqual(deletes, ['t1']);
+  assert.equal(notified, true, 'onChanged fired immediately');
+  release();
+  await p;
+});

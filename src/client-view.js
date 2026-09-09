@@ -414,6 +414,10 @@ function createClientPluginBody(React) {
     const panelCore = createScheduledClientState({
       fetchState: async () => {
         const res = await doFetch(stateRoutePath, { headers: { accept: "application/json" } });
+    // cross-instance sync: a cancel/create in either surface refreshes the
+    // other immediately (no 4s poll lag)
+    core.onChanged = () => { void panelCore.refresh(); };
+    panelCore.onChanged = () => { void core.refresh(); };
         if (!res.ok) throw new Error("state HTTP " + res.status);
         return res.json();
       },
