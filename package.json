@@ -15,7 +15,8 @@
     "lib",
     "cordis.patch.yml",
     "package.json",
-    "README.md"
+    "README.md",
+    "dsh.plugin.json"
   ],
   "repository": {
     "type": "git",
