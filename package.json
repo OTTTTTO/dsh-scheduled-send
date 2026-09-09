@@ -1,6 +1,6 @@
 {
-  "name": "dsh-scheduled-send",
-  "version": "0.1.0",
+  "name": "@ottttto/dsh-scheduled-send",
+  "version": "0.2.0",
   "description": "DSH plugin: scheduled sending (⏰ composer button, dock list of pending tasks, due-time delivery as a normal user bubble)",
   "type": "module",
   "main": "./src/index.js",
@@ -10,6 +10,26 @@
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
+  "files": [
+    "src",
+    "lib",
+    "cordis.patch.yml",
+    "package.json",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OTTTTTO/dsh-scheduled-send"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "scheduled",
+    "timer",
+    "定时发送"
+  ],
+  "author": "ottttto",
+  "license": "MIT",
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
@@ -29,6 +49,5 @@
   },
   "engines": {
     "node": ">=18"
-  },
-  "license": "MIT"
+  }
 }

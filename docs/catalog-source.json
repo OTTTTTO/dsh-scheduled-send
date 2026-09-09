@@ -1,0 +1,27 @@
+{
+  "manifestVersion": "1.0.0",
+  "providerId": "io.github.ottttto.dsh-scheduled-send",
+  "name": "ottttto DSH plugins",
+  "description": "Personal DSH Community Market catalog for plugins by ottttto.",
+  "homepage": "https://github.com/OTTTTTO/dsh-scheduled-send",
+  "attribution": {
+    "name": "ottttto",
+    "url": "https://github.com/OTTTTTO"
+  },
+  "transport": {
+    "kind": "https-json",
+    "endpoint": "https://ottttto.github.io/dsh-scheduled-send/v1/plugins",
+    "method": "GET"
+  },
+  "query": {
+    "supported": [
+      "q",
+      "category",
+      "cursor",
+      "limit"
+    ],
+    "defaultLimit": 50,
+    "maxLimit": 50,
+    "sorts": []
+  }
+}

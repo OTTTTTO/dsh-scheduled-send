@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "1.0.0",
+  "items": [
+    {
+      "id": "dsh-scheduled-send",
+      "name": "@ottttto/dsh-scheduled-send",
+      "displayName": "定时发送 Scheduled Send",
+      "summary": "到点以你的身份发送：定时发送草稿、无人值守、会话隔离、断电补发 / Send your draft as you at a chosen time, unattended, per-conversation, with offline catch-up.",
+      "description": "DSH web plugin: ⏰ composer button to schedule the current draft; due-time delivery injects a normal user bubble into the original conversation and triggers the model. Tasks are persisted locally and caught up after restart.",
+      "homepage": "https://github.com/OTTTTTO/dsh-scheduled-send",
+      "latestVersion": "0.2.0",
+      "license": "MIT",
+      "categories": [
+        "productivity"
+      ],
+      "keywords": [
+        "dsh",
+        "deepseek-harness",
+        "scheduled",
+        "timer",
+        "定时发送"
+      ],
+      "repository": {
+        "url": "https://github.com/OTTTTTO/dsh-scheduled-send"
+      },
+      "package": {
+        "registry": "npm",
+        "name": "@ottttto/dsh-scheduled-send"
+      },
+      "publisher": {
+        "name": "ottttto",
+        "url": "https://github.com/OTTTTTO"
+      }
+    }
+  ],
+  "page": {}
+}
