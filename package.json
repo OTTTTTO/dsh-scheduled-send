@@ -1,7 +1,7 @@
 {
   "name": "@ottttto/dsh-scheduled-send",
-  "version": "0.2.3",
-  "description": "DSH plugin: scheduled sending (⏰ composer button, dock list of pending tasks, due-time delivery as a normal user bubble)",
+  "version": "0.3.0",
+  "description": "DSH plugin: scheduled sending (⏰ composer button, dock list of pending tasks, sidebar 定时任务 panel with cross-session cancel, due-time delivery as a normal user bubble)",
   "type": "module",
   "main": "./src/index.js",
   "exports": {
@@ -38,7 +38,8 @@
     "client": {
       "platform": "web",
       "inject": [
-        "@deepseek-ai/dsh-client-ui-conversation"
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-sidebar"
       ],
       "external": []
     }

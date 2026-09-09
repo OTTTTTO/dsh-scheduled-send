@@ -227,12 +227,172 @@ function createClientPluginBody(React) {
     ]);
   }
 
+  /* --- sidebar footer「定时任务」panel (0.3.0) ---------------------------- */
+  function ScheduledTasksPanel(props) {
+    const core = props.panelCore;
+    const [open, setOpen] = React.useState(false);
+    const [tick, setTick] = React.useState(0);
+    const mobile = isMobile();
+
+    // keep the badge alive even while the panel is closed: poll the FULL
+    // (unfiltered) state — every conversation's pending tasks, 8s cadence.
+    React.useEffect(() => {
+      let stopped = false;
+      let timer = null;
+      const loop = async () => {
+        if (stopped) return;
+        await core.refresh().catch(() => {});
+        if (!stopped) setTick((n) => n + 1);
+        if (!stopped) { timer = setTimeout(loop, 8000); timer.unref?.(); }
+      };
+      void loop();
+      return () => { stopped = true; clearTimeout(timer); };
+    }, []);
+
+    const all = core.visibleTasks(); // ALL sessions, sendAt ascending
+    const err = core.lastError();
+    const MAX_ROWS = 100;
+    const annotated = annotateSessions(all.slice(0, MAX_ROWS), props.sessionById ? props.sessionById() : null);
+    const overflow = Math.max(0, all.length - annotated.length);
+
+    const isDark = typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    const entryBtn = {
+      cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6,
+      border: "none", background: "transparent", color: "inherit",
+      fontSize: 12, fontWeight: 600, padding: "4px 8px", borderRadius: 8, whiteSpace: "nowrap",
+      ...(mobile ? { minHeight: TOUCH_MIN } : {}),
+    };
+    const badge = (n) => h("span", {
+      key: "b", "data-badge": n,
+      style: {
+        display: "inline-flex", alignItems: "center", justifyContent: "center",
+        minWidth: 16, height: 16, padding: "0 4px", borderRadius: 999,
+        background: "#3b82f6", color: "#fff", fontSize: 10, fontWeight: 700,
+      },
+    }, String(n));
+
+    const jump = (t) => {
+      // failure mode: jump unavailable/unknown session → keep the panel open,
+      // keep the row (still cancellable); never throw into the click handler.
+      const ok = props.openSession ? props.openSession(t.conversationId) : false;
+      if (ok) setOpen(false);
+    };
+    const cancelBtn = (t) => h("button", {
+      key: "x", type: "button",
+      onClick: (e) => {
+        if (e && typeof e.stopPropagation === "function") e.stopPropagation();
+        core.cancelTask(t.id).catch(() => {});
+        setTick((n) => n + 1);
+      },
+      style: {
+        cursor: "pointer", border: "1px solid rgba(128,128,128,.4)", borderRadius: 999,
+        padding: "0 8px", fontSize: 11, background: "transparent", color: "inherit", flexShrink: 0,
+        ...(mobile ? { minHeight: TOUCH_MIN, boxSizing: "border-box" } : {}),
+      },
+    }, "取消");
+
+    const footer = open
+      ? h("div", {
+          key: "panel", "data-plugin": "dsh-scheduled-send-sidebar-panel",
+          style: {
+            position: "fixed", bottom: 56, left: 12, zIndex: 50,
+            width: 340, maxWidth: "calc(100vw - 24px)", maxHeight: "70vh", overflowY: "auto",
+            boxSizing: "border-box", padding: "10px 12px", fontSize: 12,
+            borderRadius: 12, border: "1px solid " + (isDark ? "rgba(255,255,255,.14)" : "rgba(0,0,0,.10)"),
+            background: isDark ? "#1c1c1e" : "#fff",
+            boxShadow: "0 8px 24px rgba(0,0,0,.18)",
+            color: isDark ? "#eee" : "#111",
+            ...(mobile ? { left: 8, width: "calc(100vw - 16px)", maxWidth: "calc(100vw - 16px)" } : {}),
+          },
+        }, [
+          h("div", {
+            key: "head", style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 6 },
+          }, [
+            h("span", { key: "t", style: { fontWeight: 700, fontSize: 13 } }, "⏰ 定时任务"),
+            h("span", { key: "n", style: { opacity: .6 } }, all.length ? `${all.length} 条待发送` : ""),
+            h("button", {
+              key: "close", type: "button", onClick: () => setOpen(false),
+              style: { cursor: "pointer", marginLeft: "auto", border: "none", background: "transparent", color: "inherit", fontSize: 14, lineHeight: 1 },
+            }, "✕"),
+          ]),
+          err
+            ? h("div", {
+                key: "err",
+                style: { padding: "3px 8px", borderRadius: 8, background: "rgba(220,38,38,.10)", color: "#dc2626", wordBreak: "break-word" },
+              }, "⚠ 加载失败，显示上一次列表：" + err)
+            : null,
+          !all.length && !err
+            ? h("div", { key: "empty", style: { padding: "18px 0", textAlign: "center", opacity: .6 } }, [
+                h("div", { key: "l1" }, "暂无定时任务"),
+                h("div", { key: "l2", style: { marginTop: 4 } }, "在会话输入框点击 ⏰ 定时 即可创建"),
+              ])
+            : null,
+          annotated.map((t) => h("div", {
+            key: t.id, "data-task": t.id,
+            onClick: () => { if (t.sessionExists) jump(t); },
+            title: t.sessionExists ? "打开对应会话" : "会话不存在，仅可取消",
+            style: {
+              display: "flex", flexDirection: "column", gap: 2, padding: "6px 8px", marginBottom: 4,
+              borderRadius: 8, background: "rgba(59,130,246,.10)", border: "1px solid rgba(59,130,246,.22)",
+              cursor: t.sessionExists ? "pointer" : "default",
+              opacity: t.sessionExists ? 1 : 0.5,
+              wordBreak: "break-word", maxWidth: "100%", boxSizing: "border-box",
+            },
+          }, [
+            h("div", { key: "c", style: { whiteSpace: "pre-wrap", fontFamily: "monospace" } },
+              summarizeContent(t.content) || "(空内容)"),
+            h("div", { key: "m", style: { display: "flex", alignItems: "center", gap: 8, color: "rgba(128,128,128,1)", flexWrap: "wrap" } }, [
+              h("span", { key: "s", style: { maxWidth: "60%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } },
+                t.sessionExists ? t.sessionTitle : "会话不存在"),
+              h("span", { key: "at" }, formatLocalTime(t.sendAt)),
+              h("span", { key: "cd" }, formatCountdown(t.sendAt, Date.now())),
+              h("span", { key: "sp", style: { marginLeft: "auto" } }, cancelBtn(t)),
+            ]),
+          ])),
+          overflow > 0
+            ? h("div", { key: "more", style: { textAlign: "center", opacity: .6, padding: "4px 0" } },
+                `仅显示最近 ${annotated.length} 条（共 ${all.length} 条）`)
+            : null,
+        ])
+      : null;
+
+    return h("div", { "data-plugin": "dsh-scheduled-send-sidebar", style: { display: "inline-flex", alignItems: "center" } }, [
+      h("button", {
+        key: "btn", type: "button",
+        onClick: () => { setOpen(!open); setTick((n) => n + 1); },
+        title: "定时任务", "aria-label": "定时任务", style: entryBtn,
+      }, [
+        h("span", { key: "l" }, "⏰ 定时任务"),
+        all.length ? badge(all.length) : null,
+      ]),
+      footer,
+    ]);
+  }
+
   /** Client plugin body. Returns the cordis plugin ({inject, apply}). */
   return function buildPlugin({ stateRoutePath, fetchImpl }) {
     const schedulePath = stateRoutePath.replace(/\/state$/, "/schedule");
     const doFetch = fetchImpl || ((...a) => fetch(...a));
 
     let currentSessionId = null;
+
+    const doCancel = async (id) => {
+      const res = await doFetch(schedulePath + "?id=" + encodeURIComponent(id), { method: "DELETE" });
+      return res.ok;
+    };
+
+    // 0.3.0 panel core: UNBOUND (session null) — fetches the FULL task list
+    // (no conversationId filter) for the sidebar badge + panel; cancel reuses
+    // the same DELETE route (cross-conversation).
+    const panelCore = createScheduledClientState({
+      fetchState: async () => {
+        const res = await doFetch(stateRoutePath, { headers: { accept: "application/json" } });
+        if (!res.ok) throw new Error("state HTTP " + res.status);
+        return res.json();
+      },
+      cancelSchedule: doCancel,
+    });
+    panelCore.setSession(null);
 
     const core = createScheduledClientState({
       fetchState: async () => {
@@ -261,9 +421,28 @@ function createClientPluginBody(React) {
     });
     core.defaultSendAt = () => defaultSendAt();
 
-    const inject = ["slots"];
+    const inject = ["slots", "sessions"]; // sessions: sidebar panel jump (0.3.0)
     function apply(ctx) {
       ctx.inject(inject, (scope) => {
+        // 0.3.0 session navigation, sourced from the sessions service:
+        //  - open(id) selects a session as current (unknown ids throw → false)
+        //  - list.getSnapshot().byId maps id → {displayTitle} for row labels
+        const svc = scope.sessions;
+        const openSession = (sid) => {
+          try {
+            if (svc && typeof svc.open === "function" && sid) { svc.open(sid); return true; }
+          } catch (err) { /* unknown session — degrade, row stays cancellable */ }
+          return false;
+        };
+        const sessionById = () => {
+          try { return (svc && svc.list && svc.list.getSnapshot && svc.list.getSnapshot().byId) || {}; }
+          catch (err) { return {}; }
+        };
+        scope.slots.inject("sidebar.footer.action", () => scope.slots.register({
+          name: "sidebar.footer.action",
+          id: "@ottttto/dsh-scheduled-send",
+          order: 20,
+        }, (slotProps) => ScheduledTasksPanel({ ...(slotProps || {}), panelCore, openSession, sessionById })));
         scope.slots.inject("conversation.input.right", () => scope.slots.register({
           name: "conversation.input.right",
           id: "@ottttto/dsh-scheduled-send",

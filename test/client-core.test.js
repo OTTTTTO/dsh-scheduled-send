@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import {
   sortTasks, collapseState, formatLocalTime, formatCountdown,
   createScheduledClientState, defaultSendAt, isMobileViewport,
+  summarizeContent, annotateSessions,
 } from '../src/client-core.js';
 
 test('sortTasks orders by sendAt ascending', () => {
@@ -277,4 +278,54 @@ test('setSession swaps to the cached list of the target session instantly', asyn
   const changed = core.setSession(sidA);
   assert.equal(changed, true);
   assert.equal(core.visibleTasks().length, 1, 'A cache restored instantly, before refresh resolves');
+});
+
+// --- sidebar panel (0.3.0): all-conversations list ----------------------------
+test('summarizeContent: first line, trimmed, ellipsized past the cap', () => {
+  assert.equal(summarizeContent('短任务'), '短任务');
+  assert.equal(summarizeContent('  第一行\n第二行  '), '第一行');
+  const long = 'a'.repeat(80);
+  const out = summarizeContent(long, 50);
+  assert.equal(out.length, 50);
+  assert.ok(out.endsWith('…'), 'cap-overflow ends with an ellipsis');
+  assert.equal(summarizeContent('   '), '');
+  assert.equal(summarizeContent(null), '');
+});
+
+test('annotateSessions: maps titles from the session list, flags missing sessions', () => {
+  const byId = {
+    's1': { id: 's1', displayTitle: '会话一', title: '会话一' },
+    's2': { id: 's2', displayTitle: 'fallback' },
+  };
+  const out = annotateSessions([
+    { id: 't1', conversationId: 's1' },
+    { id: 't2', conversationId: 's2' },
+    { id: 't3', conversationId: 'gone' },
+    { id: 't4' }, // no conversation id at all → treated as missing
+  ], byId);
+  assert.equal(out[0].sessionTitle, '会话一');
+  assert.equal(out[0].sessionExists, true);
+  assert.equal(out[2].sessionExists, false, 'unknown session flagged missing');
+  assert.equal(out[3].sessionExists, false);
+  // null byId map → everything missing but never throws
+  const out2 = annotateSessions([{ id: 't1', conversationId: 's1' }], null);
+  assert.equal(out2[0].sessionExists, false);
+});
+
+test('panel mode: an UNBOUND client (setSession(null)) sees ALL sessions sorted ascending', async () => {
+  const served = [
+    { id: 'b', content: 'B', sendAt: 6, conversationId: 's2' },
+    { id: 'a', content: 'A', sendAt: 5, conversationId: 's1' },
+    { id: 'c', content: 'C', sendAt: 7, conversationId: 's1' },
+  ];
+  const core = createScheduledClientState({
+    fetchState: async () => ({ now: 0, tasks: served }),
+    cancelSchedule: async () => true,
+    now: () => 0,
+  });
+  core.setSession(null); // panel binding: no conversation filter
+  await core.refresh();
+  assert.deepEqual(core.visibleTasks().map((t) => t.id), ['a', 'b', 'c'], 'ALL sessions, sendAt ascending');
+  await core.cancelTask('b');
+  assert.deepEqual(core.visibleTasks().map((t) => t.id), ['a', 'c'], 'cross-session cancel drops the entry');
 });

@@ -13,11 +13,12 @@
 - 🔁 **断电补发**：任务持久化在本地（`<dataDir>/tasks.json`），重启 DSH 后恢复队列并向原会话补发；会话不在线时保留任务，会话恢复即补发。
 - ✕ **一键取消**：列表中每条任务均可随时取消。
 - 📱 **移动端适配**：近全宽弹窗、≥40px 触控高度、防横向溢出。
+- 🗂️ **侧边栏「定时任务」面板**（v0.3.0）：侧边栏底部入口（含全库未发送任务数角标）→ 独立面板列出**所有会话**的未发送任务（sendAt 升序、内容摘要、计划时间本地格式、倒计时、会话名）；点击条目跳转到对应会话；条目取消按钮可跨会话取消（复用既有 DELETE 路由）；会话已删除的条目置灰标注「会话不存在」仍可取消；空列表显示友好空态。挂载机制与 `@ychris12138/dsh-usage-stats` 同型（`sidebar.footer.action` 槽位），跳转使用 `sessions.open(sessionId)` 会话导航服务。
 
 ## 安装
 
 ```bash
-dsh plugin --profile web add @ottttto/dsh-scheduled-send@0.2.0
+dsh plugin --profile web add @ottttto/dsh-scheduled-send@0.3.0
 ```
 
 然后重启 DSH Web GUI。
@@ -28,6 +29,7 @@ dsh plugin --profile web add @ottttto/dsh-scheduled-send@0.2.0
 2. 点输入框工具行的 **⏰** → 确认时间（默认 +5 分钟）→ 确认。
 3. 输入框被清空；上方出现已排程条目（含计划时间与倒计时），可随时点取消。
 4. 到点后消息以你的正常用户气泡出现在**创建时的会话**并触发模型响应。
+5. 侧边栏底部「⏰ 定时任务」：查看/跳转/取消**所有会话**的定时任务。
 
 ## 隐私
 

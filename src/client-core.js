@@ -79,6 +79,35 @@ export function defaultSendAt(now = Date.now(), offsetMs = 5 * 60_000) {
 }
 
 /**
+ * One-line content summary for the sidebar panel list (0.3.0): first line,
+ * trimmed; capped with an ellipsis past `max` chars. Empty input → ''.
+ */
+export function summarizeContent(text, max = 50) {
+  if (typeof text !== 'string') return '';
+  const first = text.split(/\r?\n/, 1)[0].trim();
+  if (!first) return '';
+  return first.length > max ? first.slice(0, max - 1) + '…' : first;
+}
+
+/**
+ * Attach session identity to panel rows (0.3.0): `sessionTitle` from the
+ * client session list's displayTitle, `sessionExists` false when the session
+ * is gone (deleted / not in the list) — those rows gray out but stay
+ * cancellable. Never throws on a missing/empty map.
+ */
+export function annotateSessions(tasks, sessionsById) {
+  const byId = sessionsById || {};
+  return (tasks || []).map((t) => {
+    const s = t?.conversationId ? byId[t.conversationId] : null;
+    return {
+      ...t,
+      sessionExists: !!s,
+      sessionTitle: s ? (s.displayTitle || s.title || t.conversationId) : '',
+    };
+  });
+}
+
+/**
  * Stateful client controller: polls the host state route, holds the visible
  * task list (extended with the server-confirmed task right after POST so new
  * entries show WITHOUT a refresh), and exposes cancel.

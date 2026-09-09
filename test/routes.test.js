@@ -141,3 +141,15 @@ test('FIX2 GET state ?conversationId= filters tasks to that conversation', async
   const body = jsonOf(res);
   assert.deepEqual(body.tasks.map((t) => t.id), ['a1'], 'only session A tasks');
 });
+
+// --- 0.3.0: sidebar panel full mode ------------------------------------------
+test('0.3.0 GET state WITHOUT conversationId returns ALL sessions’ tasks (panel mode), each carrying conversationId', async () => {
+  const { call } = await mkStack();
+  await call('POST', SCHEDULE_PATH, { content: 'A任务', sendAt: 4_000, conversationId: 'sess-A' });
+  await call('POST', SCHEDULE_PATH, { content: 'B任务', sendAt: 9_000, conversationId: 'sess-B' });
+  const res = await call('GET', STATE_PATH); // no filter
+  assert.equal(res.status, 200);
+  const body = jsonOf(res);
+  assert.deepEqual(body.tasks.map((t) => t.conversationId), ['sess-A', 'sess-B'], 'all sessions, ascending');
+  assert.ok(body.tasks.every((t) => typeof t.conversationId === 'string' && t.conversationId), 'conversationId present on every task');
+});

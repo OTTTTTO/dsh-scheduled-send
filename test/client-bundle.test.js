@@ -56,8 +56,8 @@ function makeInteractiveReact() {
   return self;
 }
 
-function applySlots(mod) {
-  const captured = { right: null, dock: null, props: null };
+function applySlots(mod, sessions) {
+  const captured = { right: null, dock: null, sidebar: null, props: null };
   const fakeCtx = {
     inject: (names, fn) => fn({
       slots: {
@@ -65,9 +65,11 @@ function applySlots(mod) {
           const r = reg({});
           if (name === 'conversation.input.right') captured.right = r;
           if (name === 'conversation.input.dock') captured.dock = r;
+          if (name === 'sidebar.footer.action') captured.sidebar = r;
         },
         register: (o, C) => { o.__comp = C; return o; },
       },
+      sessions,
     }),
   };
   mod.apply(fakeCtx);
@@ -101,7 +103,7 @@ function expandFn(node, depth = 0) {
 
 test('bundle: slots wired (input.right + input.dock ONLY — modelDirectories gone), core hits the state route', async () => {
   const mod = loadBundle(dumbReact);
-  assert.deepEqual([...mod.inject].sort(), ['slots'], 'FIX3: modelDirectories no longer injected');
+  assert.deepEqual([...mod.inject].sort(), ['sessions', 'slots'], 'FIX3: modelDirectories gone; 0.3.0 adds sessions for sidebar jumps');
   const captured = applySlots(mod);
   assert.equal(captured.right.name, 'conversation.input.right');
   assert.equal(captured.right.id, '@ottttto/dsh-scheduled-send');
@@ -335,4 +337,140 @@ test('bundle FIX1: failed state fetch keeps the old list and shows an error line
   const tree = expandFn(captured.dock.__comp({ ...captured.props.dock }));
   assert.equal(findAll(tree, (n) => n.props?.style?.fontFamily === 'monospace').length, 1, 'old entry still rendered after a failed refresh');
   assert.match(JSON.stringify(texts(tree)), /加载失败/, 'error surfaced inline');
+});
+
+// --- 0.3.0: sidebar「定时任务」panel -------------------------------------------
+function mkSessions(byId) {
+  const opened = [];
+  return {
+    list: { getSnapshot: () => ({ byId }) },
+    open: (id) => { if (!(id in byId)) throw new Error('unknown session'); opened.push(id); },
+    opened,
+  };
+}
+
+test('sidebar: footer action registered; entry shows the ALL-sessions badge; panel lists tasks sorted asc with session labels', async () => {
+  const react = makeInteractiveReact();
+  const mod = loadBundle(react);
+  const sessions = mkSessions({
+    'sess-1': { id: 'sess-1', displayTitle: '会话一' },
+    'sess-2': { id: 'sess-2', displayTitle: '会话二' },
+  });
+  const captured = applySlots(mod, sessions);
+  assert.ok(captured.sidebar, 'sidebar.footer.action registration captured');
+  assert.equal(captured.sidebar.name, 'sidebar.footer.action');
+  assert.equal(captured.sidebar.id, '@ottttto/dsh-scheduled-send');
+
+  const base = Date.now() + 60_000;
+  const allTasks = [
+    { id: 't2', content: '第二条', sendAt: base + 20_000, conversationId: 'sess-2' },
+    { id: 't1', content: '第一条\n带换行', sendAt: base + 10_000, conversationId: 'sess-1' },
+  ];
+  const urls = [];
+  globalThis.fetch = async (path) => {
+    urls.push(path);
+    return { ok: true, json: async () => ({ now: 0, tasks: allTasks }) };
+  };
+
+  // initial render: footer entry with badge = 2 (ALL sessions)
+  react.reset();
+  let tree = expandFn(captured.sidebar.__comp({ wide: true }));
+  const entryBtn = findAll(tree, (n) => n.type === 'button' && /定时任务/.test(texts(n).join('')))[0];
+  assert.ok(entryBtn, 'sidebar entry button rendered');
+  react.runEffects(); // mount effect polls the full state
+  await new Promise((r) => setTimeout(r, 5));
+  react.reset();
+  tree = expandFn(captured.sidebar.__comp({ wide: true }));
+  assert.match(JSON.stringify(texts(tree)), /2/, 'badge shows the all-sessions pending count');
+
+  // open the panel: fetches the FULL state (no conversationId filter)
+  entryBtn.props.onClick();
+  react.reset();
+  tree = expandFn(captured.sidebar.__comp({ wide: true }));
+  react.runEffects();
+  await new Promise((r) => setTimeout(r, 5));
+  react.reset();
+  tree = expandFn(captured.sidebar.__comp({ wide: true }));
+  assert.ok(urls.some((u) => !u.includes('conversationId=')), 'panel fetches the unfiltered all-tasks state');
+  const rows = findAll(tree, (n) => n.props?.['data-task']);
+  assert.equal(rows.length, 2, 'both sessions’ tasks listed');
+  assert.deepEqual(rows.map((r) => r.props['data-task']), ['t1', 't2'], 'sendAt ascending');
+  const flat = JSON.stringify(texts(tree));
+  assert.match(flat, /会话一/, 'session label from the session list');
+  assert.match(flat, /会话二/, 'second session label');
+  assert.match(flat, /第一条/, 'content summary present');
+});
+
+test('sidebar: entry click jumps via sessions.open; missing session → 置灰 still cancellable; empty state', async () => {
+  const react = makeInteractiveReact();
+  const mod = loadBundle(react);
+  const sessions = mkSessions({ 'sess-1': { id: 'sess-1', displayTitle: '会话一' } });
+  const captured = applySlots(mod, sessions);
+  const base = Date.now() + 60_000;
+  const allTasks = [
+    { id: 't1', content: 'ok', sendAt: base, conversationId: 'sess-1' },
+    { id: 't2', content: 'orphan', sendAt: base + 5_000, conversationId: 'gone' },
+  ];
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ now: 0, tasks: allTasks }) });
+  react.reset();
+  let tree = expandFn(captured.sidebar.__comp({}));
+  const entryBtn = findAll(tree, (n) => n.type === 'button' && /定时任务/.test(texts(n).join('')))[0];
+  entryBtn.props.onClick();
+  react.runEffects();
+  await new Promise((r) => setTimeout(r, 5));
+  react.reset();
+  tree = expandFn(captured.sidebar.__comp({}));
+  const rows = findAll(tree, (n) => n.props?.['data-task']);
+  assert.equal(rows.length, 2);
+
+  // click the live entry → sessions.open(sessionId)
+  rows.find((r) => r.props['data-task'] === 't1').props.onClick();
+  assert.equal(sessions.opened.length, 1, 'entry click calls sessions.open once');
+  assert.equal(sessions.opened[0], 'sess-1');
+
+  // missing-session entry: grayed (opacity < 1), labelled 会话不存在, click does NOT navigate, cancel still works
+  const orphan = rows.find((r) => r.props['data-task'] === 't2');
+  assert.ok(Number(orphan.props.style.opacity) < 1, 'orphan entry grayed');
+  assert.match(JSON.stringify(texts(orphan)), /会话不存在/, 'missing-session label');
+  const before = sessions.opened.length;
+  orphan.props.onClick();
+  assert.equal(sessions.opened.length, before, 'orphan click does not navigate');
+  const cancel = findAll(orphan, (n) => n.type === 'button' && /取消/.test(texts(n).join('')))[0];
+  assert.ok(cancel, 'cancel button on the orphan entry');
+  const del = [];
+  globalThis.fetch = async (path, opts = {}) => {
+    if ((opts.method || 'GET') === 'DELETE') { del.push(path); return { ok: true, json: async () => ({}) }; }
+    return { ok: true, json: async () => ({ now: 0, tasks: allTasks.filter((t) => t.id !== 't2') }) };
+  };
+  await cancel.props.onClick();
+  assert.equal(del.length, 1, 'cancel reuses the existing DELETE route');
+  assert.match(del[0], /schedule\?id=t2$/);
+});
+
+test('sidebar: empty state is friendly; mobile panel spans the viewport', async () => {
+  const react = makeInteractiveReact();
+  const mod = loadBundle(react);
+  const sessions = mkSessions({});
+  const captured = applySlots(mod, sessions);
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ now: 0, tasks: [] }) });
+  react.reset();
+  let tree = expandFn(captured.sidebar.__comp({}));
+  assert.doesNotMatch(JSON.stringify(texts(tree)), /[0-9]/, 'no numeric badge when zero tasks');
+  const entryBtn = findAll(tree, (n) => n.type === 'button' && /定时任务/.test(texts(n).join('')))[0];
+  entryBtn.props.onClick();
+  react.runEffects();
+  await new Promise((r) => setTimeout(r, 5));
+  react.reset();
+  tree = expandFn(captured.sidebar.__comp({}));
+  assert.match(JSON.stringify(texts(tree)), /暂无定时任务/, 'friendly empty state');
+
+  // mobile: panel width ~100vw
+  global.window.matchMedia = (q) => ({ matches: String(q).includes('480') });
+  globalThis.fetch = async () => ({ ok: true, json: async () => ({ now: 0, tasks: [{ id: 't1', content: 'x', sendAt: Date.now() + 60_000, conversationId: 's' }] }) });
+  // panel stays open; only the viewport changed
+  react.reset();
+  tree = expandFn(captured.sidebar.__comp({}));
+  const panel = findAll(tree, (n) => n.type === 'div' && String(n.props?.style?.width || '').includes('100vw'))[0];
+  assert.ok(panel, 'mobile: panel width uses ~100vw');
+  delete global.window.matchMedia;
 });
