@@ -51,6 +51,9 @@ function createClientPluginBody(React) {
       try {
         const payload = { content, sendAt: at, conversationId: props.sessionId };
         await core.scheduleMessage(payload);
+        // sidebar panel has its own state: refresh it NOW (its 8s poll would
+        // otherwise lag ~10s behind a fresh task)
+        if (props.onTaskCreated) void props.onTaskCreated();
         // spec: 内容转为定时任务并清空输入框 — 绝不立即发送（不调 submit）
         if (props.inputActions && typeof props.inputActions.setDraft === "function") props.inputActions.setDraft("");
         setOpen(false);
@@ -450,7 +453,7 @@ function createClientPluginBody(React) {
           inject: (sessionId) => {
             currentSessionId = sessionId;
             core.setSession(sessionId); // dock/button are conversation-scoped
-            return { sessionId, core };
+            return { sessionId, core, onTaskCreated: () => panelCore.refresh() };
           },
         }, ScheduleButton));
         scope.slots.inject("conversation.input.dock", () => scope.slots.register({
@@ -460,7 +463,7 @@ function createClientPluginBody(React) {
           inject: (sessionId) => {
             currentSessionId = sessionId;
             core.setSession(sessionId);
-            return { sessionId, core };
+            return { sessionId, core, onTaskCreated: () => panelCore.refresh() };
           },
         }, ScheduledDock));
       });
