@@ -1,0 +1,9 @@
+# Netlify headers config (docs/ is the publish directory).
+# The market contract requires the provider page at /v1/plugins (no extension,
+# enforced by schema); static hosts guess MIME from extension and would serve
+# application/octet-stream, which the DSH Community Market adapter rejects.
+[[headers]]
+  for = "/v1/plugins"
+  [headers.values]
+    Content-Type = "application/json"
+    Access-Control-Allow-Origin = "*"
